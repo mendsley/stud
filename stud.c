@@ -58,7 +58,9 @@
 #include <openssl/x509v3.h>
 #include <openssl/x509.h>
 #include <openssl/err.h>
+#ifndef OPENSSL_NO_ENGINE
 #include <openssl/engine.h>
+#endif
 #include <openssl/asn1.h>
 #include <ev.h>
 
@@ -755,6 +757,7 @@ void init_openssl() {
 #undef APPEND_CTX
 #endif /* OPENSSL_NO_TLSEXT */
 
+#ifndef OPENSSL_NO_ENGINE
     if (CONFIG->ENGINE) {
         ENGINE *e = NULL;
         ENGINE_load_builtin_engines();
@@ -772,6 +775,7 @@ void init_openssl() {
             ENGINE_free(e);
         }
     }
+#endif
 }
 
 static void prepare_proxy_line(struct sockaddr* ai_addr) {
