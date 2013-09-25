@@ -1,6 +1,6 @@
-conf
-ebtree*
-core
-core.*
-*.o
-stud
+/conf
+/ebtree*
+/core
+/core.*
+/*.o
+/stud
