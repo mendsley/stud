@@ -973,15 +973,16 @@ static void handle_socket_errno(proxystate *ps, int backend) {
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
 }
 /* Start connect to backend */
-static void start_connect(proxystate *ps) {
+static int start_connect(proxystate *ps) {
     int t = 1;
     t = connect(ps->fd_down, backaddr->ai_addr, backaddr->ai_addrlen);
     if (t == 0 || errno == EINPROGRESS || errno == EINTR) {
         ev_io_start(loop, &ps->ev_w_connect);
-        return ;
+        return 0;
     }
     perror("{backend-connect}");
     shutdown_proxy(ps, SHUTDOWN_HARD);
+    return -1;
 }
 
 /* Read some data from the backend when libev says data is available--
@@ -1177,7 +1178,9 @@ static void end_handshake(proxystate *ps) {
             }
         }
         /* start connect now */
-        start_connect(ps);
+        if (0 != start_connect(ps)) {
+            return;
+        }
     }
     else {
         /* stud used in client mode, keep client session ) */
