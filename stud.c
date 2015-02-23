@@ -182,7 +182,7 @@ static union ha_proxy_v2_addr frontend_addr;
  * All state associated with one proxied connection
  */
 typedef struct proxystate {
-    ringbuffer ring_ssl2clear;          /* Pushing bytes from secure to clear stream */
+    struct bufferchain bc_ssl2clear;          /* Pushing bytes from secure to clear stream */
 	struct bufferchain bc_clear2ssl;    /* Pushing bytes from clear to secure stream */
 
     ev_io ev_r_ssl;                     /* Secure stream write event */
@@ -952,13 +952,14 @@ static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
         SSL_free(ps->ssl);
 
 		bufferchain_destroy(&ps->bc_clear2ssl);
+		bufferchain_destroy(&ps->bc_ssl2clear);
         free(ps);
     }
     else {
         ps->want_shutdown = 1;
         if (req == SHUTDOWN_CLEAR && 0 == bufferchain_readable(&ps->bc_clear2ssl))
             shutdown_proxy(ps, SHUTDOWN_HARD);
-        else if (req == SHUTDOWN_SSL && ringbuffer_is_empty(&ps->ring_ssl2clear))
+        else if (req == SHUTDOWN_SSL && 0 == bufferchain_readable(&ps->bc_ssl2clear))
             shutdown_proxy(ps, SHUTDOWN_HARD);
     }
 }
@@ -1030,28 +1031,25 @@ static void clear_write(struct ev_loop *loop, ev_io *w, int revents) {
     int t;
     proxystate *ps = (proxystate *)w->data;
     int fd = w->fd;
-    int sz;
 
-    assert(!ringbuffer_is_empty(&ps->ring_ssl2clear));
+    int sz = bufferchain_readable(&ps->bc_ssl2clear);
+    assert(sz != 0);
 
-    char *next = ringbuffer_read_next(&ps->ring_ssl2clear, &sz);
+	const void* next = bufferchain_get_readptr(&ps->bc_ssl2clear);
     t = send(fd, next, sz, MSG_NOSIGNAL);
 
     if (t > 0) {
+		bufferchain_commit_read(&ps->bc_ssl2clear, t);
         if (t == sz) {
-            ringbuffer_read_pop(&ps->ring_ssl2clear);
             if (ps->handshaked)
                 safe_enable_io(ps, &ps->ev_r_ssl);
-            if (ringbuffer_is_empty(&ps->ring_ssl2clear)) {
+			if (0 == bufferchain_readable(&ps->bc_ssl2clear)) {
                 if (ps->want_shutdown) {
                     shutdown_proxy(ps, SHUTDOWN_HARD);
                     return; // dealloc'd
                 }
                 ev_io_stop(loop, &ps->ev_w_clear);
             }
-        }
-        else {
-            ringbuffer_read_skip(&ps->ring_ssl2clear, t);
         }
     }
     else {
@@ -1080,7 +1078,7 @@ static void handle_connect(struct ev_loop *loop, ev_io *w, int revents) {
                 safe_enable_io(ps, &ps->ev_r_clear);
 
             /* if outgoing buffer is not empty */
-            if (!ringbuffer_is_empty(&ps->ring_ssl2clear))
+			if (0 != bufferchain_readable(&ps->bc_ssl2clear))
                 // not safe.. we want to resume stream even during half-closed
                 ev_io_start(loop, &ps->ev_w_clear);
         }
@@ -1131,57 +1129,52 @@ static void end_handshake(proxystate *ps) {
 
         if (CONFIG->WRITE_PROXY_LINE_V2) {
 
-            char *ring_pnt = ringbuffer_write_ptr(&ps->ring_ssl2clear);
             assert(ps->remote_ip.ss_family == AF_INET ||
                    ps->remote_ip.ss_family == AF_INET6);
 
             
-            memcpy(ring_pnt, &header_proxy_v2, sizeof(header_proxy_v2));
-            memcpy(ring_pnt+sizeof(header_proxy_v2), &ps->proxy_addr, header_proxy_v2.len);
-
-            
-            
-            ringbuffer_write_append(&ps->ring_ssl2clear, header_proxy_v2.len+sizeof(header_proxy_v2));
+            bufferchain_write(&ps->bc_ssl2clear, &header_proxy_v2, sizeof(header_proxy_v2));
+            bufferchain_write(&ps->bc_ssl2clear, &ps->proxy_addr, header_proxy_v2.len);
         }
         else if (CONFIG->WRITE_PROXY_LINE) {
-            char *ring_pnt = ringbuffer_write_ptr(&ps->ring_ssl2clear);
             assert(ps->remote_ip.ss_family == AF_INET ||
                    ps->remote_ip.ss_family == AF_INET6);
             if(ps->remote_ip.ss_family == AF_INET) {
+               char buffer[128];
                struct sockaddr_in* addr = (struct sockaddr_in*)&ps->remote_ip;
-               written = snprintf(ring_pnt,
-                                  RING_DATA_LEN,
+               written = snprintf(buffer,
+                                  sizeof(buffer),
                                   tcp_proxy_line,
                                   "TCP4",
                                   inet_ntoa(addr->sin_addr),
                                   ntohs(addr->sin_port));
+			   bufferchain_write(&ps->bc_ssl2clear, buffer, written);
                }
                else if (ps->remote_ip.ss_family == AF_INET6) {
+                        char buffer[128];
                         struct sockaddr_in6* addr = (struct sockaddr_in6*)&ps->remote_ip;
                         inet_ntop(AF_INET6,&(addr->sin6_addr),tcp6_address_string,INET6_ADDRSTRLEN);
-                        written = snprintf(ring_pnt,
-                                  RING_DATA_LEN,
+                        written = snprintf(buffer,
+                                  sizeof(buffer),
                                   tcp_proxy_line,
                                   "TCP6",
                                   tcp6_address_string,
                                   ntohs(addr->sin6_port));
+						bufferchain_write(&ps->bc_ssl2clear, buffer, written);
             }
-            ringbuffer_write_append(&ps->ring_ssl2clear, written);
         }
         else if (CONFIG->WRITE_IP_OCTET) {
-            char *ring_pnt = ringbuffer_write_ptr(&ps->ring_ssl2clear);
+			const unsigned char sock_family = (unsigned char) ps->remote_ip.ss_family;
             assert(ps->remote_ip.ss_family == AF_INET ||
                    ps->remote_ip.ss_family == AF_INET6);
-            *ring_pnt++ = (unsigned char) ps->remote_ip.ss_family;
+			bufferchain_write(&ps->bc_ssl2clear, &sock_family, 1);
             if (ps->remote_ip.ss_family == AF_INET6) {
-                memcpy(ring_pnt, &((struct sockaddr_in6 *) &ps->remote_ip)
+                bufferchain_write(&ps->bc_ssl2clear, &((struct sockaddr_in6 *) &ps->remote_ip)
                        ->sin6_addr.s6_addr, 16U);
-                ringbuffer_write_append(&ps->ring_ssl2clear, 1U + 16U);
             }
             else {
-                memcpy(ring_pnt, &((struct sockaddr_in *) &ps->remote_ip)
+                bufferchain_write(&ps->bc_ssl2clear, &((struct sockaddr_in *) &ps->remote_ip)
                        ->sin_addr.s_addr, 4U);
-                ringbuffer_write_append(&ps->ring_ssl2clear, 1U + 4U);
             }
         }
         /* start connect now */
@@ -1199,7 +1192,7 @@ static void end_handshake(proxystate *ps) {
     }
 
     /* if incoming buffer is not full */
-    if (!ringbuffer_is_full(&ps->ring_ssl2clear))
+	if (bufferchain_readable(&ps->bc_ssl2clear) < MAXIMUM_QUEUED_DATA)
         safe_enable_io(ps, &ps->ev_r_ssl);
 
     /* if outgoing buffer is not empty */
@@ -1225,15 +1218,13 @@ static void client_proxy_proxy(struct ev_loop *loop, ev_io *w, int revents) {
         shutdown_proxy(ps, SHUTDOWN_SSL);
     }
     else if (t == 1) {
-        if (ringbuffer_is_full(&ps->ring_ssl2clear)) {
+		if (bufferchain_readable(&ps->bc_ssl2clear) >= MAXIMUM_QUEUED_DATA) {
             LOG("{client} Error writing PROXY line");
             shutdown_proxy(ps, SHUTDOWN_SSL);
             return;
         }
 
-        char *ring = ringbuffer_write_ptr(&ps->ring_ssl2clear);
-        memcpy(ring, tcp_proxy_line, proxy - tcp_proxy_line);
-        ringbuffer_write_append(&ps->ring_ssl2clear, proxy - tcp_proxy_line);
+        bufferchain_write(&ps->bc_ssl2clear, tcp_proxy_line, proxy - tcp_proxy_line);
 
         // Finished reading the PROXY header
         if (*(proxy - 1) == '\n') {
@@ -1300,14 +1291,18 @@ static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
  * and buffer anything we get for writing to the backend */
 static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
+	int sz;
     int t;
     proxystate *ps = (proxystate *)w->data;
     if (ps->want_shutdown) {
         ev_io_stop(loop, &ps->ev_r_ssl);
         return;
     }
-    char * buf = ringbuffer_write_ptr(&ps->ring_ssl2clear);
-    t = SSL_read(ps->ssl, buf, RING_DATA_LEN);
+    void * buf = bufferchain_get_writeptr(&ps->bc_ssl2clear, &sz);
+    t = SSL_read(ps->ssl, buf, sz);
+
+	if (SSL_pending(ps->ssl))
+		ev_feed_event(loop, w, EV_READ);
 
     /* Fix CVE-2009-3555. Disable reneg if started by client. */
     if (ps->renegotiation) {
@@ -1316,11 +1311,13 @@ static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
     }
 
     if (t > 0) {
-        ringbuffer_write_append(&ps->ring_ssl2clear, t);
-        if (ringbuffer_is_full(&ps->ring_ssl2clear))
+		bufferchain_commit_write(&ps->bc_ssl2clear, t);
+		if (bufferchain_readable(&ps->bc_ssl2clear) >= MAXIMUM_QUEUED_DATA) {
             ev_io_stop(loop, &ps->ev_r_ssl);
-        if (ps->clear_connected)
+		}
+        if (ps->clear_connected) {
             safe_enable_io(ps, &ps->ev_w_clear);
+		}
     }
     else {
         int err = SSL_get_error(ps->ssl, t);
@@ -1441,7 +1438,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ps->renegotiation = 0;
     ps->remote_ip = addr;
     bufferchain_init(&ps->bc_clear2ssl);
-    ringbuffer_init(&ps->ring_ssl2clear);
+    bufferchain_init(&ps->bc_ssl2clear);
 
     /* set up events */
     ev_io_init(&ps->ev_r_ssl, ssl_read, client, EV_READ);
@@ -1573,7 +1570,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ps->renegotiation = 0;
     ps->remote_ip = addr;
     bufferchain_init(&ps->bc_clear2ssl);
-    ringbuffer_init(&ps->ring_ssl2clear);
+    bufferchain_init(&ps->bc_ssl2clear);
 
     /* set up events */
     ev_io_init(&ps->ev_r_clear, clear_read, client, EV_READ);
