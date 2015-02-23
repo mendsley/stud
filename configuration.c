@@ -567,6 +567,10 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
     cfg->BACK_CONN_MODE = CONN_INET;
     if(v != NULL && (vlen = strlen(v)) > 7 && strncasecmp(v, "pipe://", 6) == 0) {
       cfg->BACK_CONN_MODE = CONN_PIPE;
+      if(cfg->BACK_IP) {
+        free(cfg->BACK_IP);
+        cfg->BACK_IP = NULL;
+      }
       config_assign_str(&cfg->BACK_IP,(v+7));
       if(cfg->BACK_IP[0] == '@') cfg->BACK_IP[0] = '\0';
     } 
