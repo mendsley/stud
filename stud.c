@@ -1670,7 +1670,8 @@ void init_globals() {
         
         backaddr->ai_socktype = SOCK_STREAM;
         backaddr->ai_addrlen = sizeof(struct sockaddr_un);
-        struct sockaddr_un* addr = backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
+		backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
+        struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
         backaddr->ai_family = addr->sun_family = AF_UNIX;
         
         strncpy(addr->sun_path, CONFIG->BACK_IP, sizeof(addr->sun_path));
