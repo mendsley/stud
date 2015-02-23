@@ -68,6 +68,7 @@
 #include "ringbuffer.h"
 #include "shctx.h"
 #include "configuration.h"
+#include "bufferchain.h"
 
 #ifndef MSG_NOSIGNAL
 # define MSG_NOSIGNAL 0
@@ -116,6 +117,8 @@ int create_workers;
 stud_config *CONFIG;
 
 static char tcp_proxy_line[128] = "";
+
+#define MAXIMUM_QUEUED_DATA (32*1024)
 
 
 /* What agent/state requests the shutdown--for proper half-closed
@@ -180,7 +183,7 @@ static union ha_proxy_v2_addr frontend_addr;
  */
 typedef struct proxystate {
     ringbuffer ring_ssl2clear;          /* Pushing bytes from secure to clear stream */
-    ringbuffer ring_clear2ssl;          /* Pushing bytes from clear to secure stream */
+	struct bufferchain bc_clear2ssl;    /* Pushing bytes from clear to secure stream */
 
     ev_io ev_r_ssl;                     /* Secure stream write event */
     ev_io ev_w_ssl;                     /* Secure stream read event */
@@ -948,11 +951,12 @@ static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
         SSL_set_shutdown(ps->ssl, SSL_SENT_SHUTDOWN);
         SSL_free(ps->ssl);
 
+		bufferchain_destroy(&ps->bc_clear2ssl);
         free(ps);
     }
     else {
         ps->want_shutdown = 1;
-        if (req == SHUTDOWN_CLEAR && ringbuffer_is_empty(&ps->ring_clear2ssl))
+        if (req == SHUTDOWN_CLEAR && 0 == bufferchain_readable(&ps->bc_clear2ssl))
             shutdown_proxy(ps, SHUTDOWN_HARD);
         else if (req == SHUTDOWN_SSL && ringbuffer_is_empty(&ps->ring_ssl2clear))
             shutdown_proxy(ps, SHUTDOWN_HARD);
@@ -999,12 +1003,13 @@ static void clear_read(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
     int fd = w->fd;
-    char * buf = ringbuffer_write_ptr(&ps->ring_clear2ssl);
-    t = recv(fd, buf, RING_DATA_LEN, 0);
+	int sz;
+	void* buf = bufferchain_get_writeptr(&ps->bc_clear2ssl, &sz);
+    t = recv(fd, buf, sz, 0);
 
     if (t > 0) {
-        ringbuffer_write_append(&ps->ring_clear2ssl, t);
-        if (ringbuffer_is_full(&ps->ring_clear2ssl))
+		bufferchain_commit_write(&ps->bc_clear2ssl, t);
+		if (bufferchain_readable(&ps->bc_clear2ssl) >= MAXIMUM_QUEUED_DATA)
             ev_io_stop(loop, &ps->ev_r_clear);
         if (ps->handshaked)
             safe_enable_io(ps, &ps->ev_w_ssl);
@@ -1071,7 +1076,7 @@ static void handle_connect(struct ev_loop *loop, ev_io *w, int revents) {
             ps->clear_connected = 1;
 
             /* if incoming buffer is not full */
-            if (!ringbuffer_is_full(&ps->ring_clear2ssl))
+			if (bufferchain_readable(&ps->bc_clear2ssl) < MAXIMUM_QUEUED_DATA)
                 safe_enable_io(ps, &ps->ev_r_clear);
 
             /* if outgoing buffer is not empty */
@@ -1198,7 +1203,7 @@ static void end_handshake(proxystate *ps) {
         safe_enable_io(ps, &ps->ev_r_ssl);
 
     /* if outgoing buffer is not empty */
-    if (!ringbuffer_is_empty(&ps->ring_clear2ssl))
+	if (0 != bufferchain_readable(&ps->bc_clear2ssl))
         // not safe.. we want to resume stream even during half-closed
         ev_io_start(loop, &ps->ev_w_ssl);
 }
@@ -1333,26 +1338,25 @@ static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
 static void ssl_write(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     int t;
-    int sz;
     proxystate *ps = (proxystate *)w->data;
-    assert(!ringbuffer_is_empty(&ps->ring_clear2ssl));
-    char * next = ringbuffer_read_next(&ps->ring_clear2ssl, &sz);
+
+    int sz = bufferchain_readable(&ps->bc_clear2ssl);
+	assert(0 != sz);
+
+	void* next = bufferchain_get_readptr(&ps->bc_clear2ssl);
     t = SSL_write(ps->ssl, next, sz);
     if (t > 0) {
+		bufferchain_commit_read(&ps->bc_clear2ssl, t);
         if (t == sz) {
-            ringbuffer_read_pop(&ps->ring_clear2ssl);
             if (ps->clear_connected)
                 safe_enable_io(ps, &ps->ev_r_clear); // can be re-enabled b/c we've popped
-            if (ringbuffer_is_empty(&ps->ring_clear2ssl)) {
+			if (0 == bufferchain_readable(&ps->bc_clear2ssl)) {
                 if (ps->want_shutdown) {
                     shutdown_proxy(ps, SHUTDOWN_HARD);
                     return;
                 }
                 ev_io_stop(loop, &ps->ev_w_ssl);
             }
-        }
-        else {
-            ringbuffer_read_skip(&ps->ring_clear2ssl, t);
         }
     }
     else {
@@ -1436,7 +1440,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ps->handshaked = 0;
     ps->renegotiation = 0;
     ps->remote_ip = addr;
-    ringbuffer_init(&ps->ring_clear2ssl);
+    bufferchain_init(&ps->bc_clear2ssl);
     ringbuffer_init(&ps->ring_ssl2clear);
 
     /* set up events */
@@ -1568,7 +1572,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ps->handshaked = 0;
     ps->renegotiation = 0;
     ps->remote_ip = addr;
-    ringbuffer_init(&ps->ring_clear2ssl);
+    bufferchain_init(&ps->bc_clear2ssl);
     ringbuffer_init(&ps->ring_ssl2clear);
 
     /* set up events */
@@ -1714,6 +1718,8 @@ void init_globals() {
 
     if (CONFIG->SYSLOG)
         openlog("stud", LOG_CONS | LOG_PID | LOG_NDELAY, CONFIG->SYSLOG_FACILITY);
+
+	bufferchain_startup();
 }
 
 /* Forks COUNT children starting with START_INDEX.
