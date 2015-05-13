@@ -168,10 +168,9 @@ union ha_proxy_v2_addr {
 
 struct ha_proxy_v2_hdr {
     uint8_t sig[12]; // = {0x0D, 0x0A, 0x0D,0x0A,0x00,0x0D,0x0A,0x51,0x55,0x49,0x54,0x0A};
-    uint8_t ver;    // = 0x02;      /* hex 02 */
-    uint8_t cmd;    // = 0x01;      /* We only support PROXY Command*/
+    uint8_t ver_cmd;    // = 0x21;      /* hex 02 */ /* We only support PROXY Command*/
     uint8_t fam;      /* protocol family and address */
-    uint8_t len;      /* number of following bytes part of the header */
+    uint16_t len;      /* number of following bytes part of the header */
 };
 
 static struct ha_proxy_v2_hdr header_proxy_v2;
@@ -819,8 +818,7 @@ static void prepare_proxy_line(struct sockaddr* ai_addr) {
     char tcp6_address_string[INET6_ADDRSTRLEN];
 
     memcpy(&header_proxy_v2.sig,"\r\n\r\n\0\r\nQUIT\n", 12);
-    header_proxy_v2.ver = 0x02;
-    header_proxy_v2.cmd = 0x01;
+    header_proxy_v2.ver_cmd = 0x21;
     header_proxy_v2.fam = ai_addr->sa_family == AF_INET ? 0x11 : 0x21;
     header_proxy_v2.len = ai_addr->sa_family == AF_INET ? 12 : 36;
 
