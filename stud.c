@@ -1391,6 +1391,12 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
 
+    struct sockaddr_storage peeraddr;
+    if (-1 == getsockname(client, (struct sockaddr *)&peeraddr, &sl))
+    {
+        perror("Couldn't get local address on client socket\n");
+    }
+
     int flag = 1;
     int ret = setsockopt(client, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag) );
     if (ret == -1) {
@@ -1461,13 +1467,17 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ps->ev_r_handshake.data = ps;
     ps->ev_w_handshake.data = ps;
 
-    memcpy(&ps->proxy_addr, &frontend_addr, sizeof(frontend_addr));
-
     if(addr.ss_family == AF_INET) {
+        struct sockaddr_in* paddr = (struct sockaddr_in*)&peeraddr;
+        memcpy(&ps->proxy_addr.ipv4_addr.dst_addr, &paddr->sin_addr, sizeof(struct in_addr));
+        ps->proxy_addr.ipv4_addr.dst_port =  paddr->sin_port;
         struct sockaddr_in* saddr = (struct sockaddr_in*)&addr;
         memcpy(&ps->proxy_addr.ipv4_addr.src_addr, &saddr->sin_addr, sizeof(struct in_addr));
         ps->proxy_addr.ipv4_addr.src_port = saddr->sin_port;
     } else if(addr.ss_family == AF_INET6) {
+        struct sockaddr_in6* paddr = (struct sockaddr_in6*)&paddr;
+        memcpy(&ps->proxy_addr.ipv6_addr.dst_addr, &paddr->sin6_addr, sizeof(struct in6_addr));
+        ps->proxy_addr.ipv6_addr.dst_port = paddr->sin6_port;
         struct sockaddr_in6* saddr = (struct sockaddr_in6*)&addr;
         memcpy(&ps->proxy_addr.ipv6_addr.src_addr, &saddr->sin6_addr, sizeof(struct in6_addr));
         ps->proxy_addr.ipv6_addr.src_port = saddr->sin6_port;
