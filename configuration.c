@@ -325,7 +325,7 @@ char * config_param_val_str (char *val) {
   return strdup(val);
 }
 
-int config_param_host_port_wildcard (char *str, char **addr, char **port, CONNECTION_MODE* mode, int wildcard_okay) {
+int config_param_host_port_wildcard (char *str, struct config_ipport* ip, int wildcard_okay) {
   int len = (str != NULL) ? strlen(str) : 0;
   if (str == NULL || ! len) {
     config_error_set("Invalid/unset host/port string.");
@@ -391,28 +391,28 @@ int config_param_host_port_wildcard (char *str, char **addr, char **port, CONNEC
   // write
   if (strcmp(addr_buf, "*") == 0) {
     if (wildcard_okay)
-      free(*addr);
+      free(ip->host);
     else {
       config_error_set("Invalid address: wildcards are not allowed.");
       return 0;
     }
   } else {
     //if (*addr != NULL) free(*addr);
-    *addr = strdup(addr_buf);
+    ip->host = strdup(addr_buf);
   }
   // if (**port != NULL) free(*port);
   if (mode_buf == CONN_INET) {
-    *port = strdup(port_buf);
+    ip->port = strdup(port_buf);
   }
-  *mode = mode_buf;
+  ip->mode = mode_buf;
 
   // printf("ADDR FINAL: '%s', '%s'\n", *addr, *port);
 
   return 1;
 }
 
-int config_param_host_port (char *str, char **addr, char **port, CONNECTION_MODE* mode) {
-  return config_param_host_port_wildcard(str, addr, port, mode, 0);
+int config_param_host_port (char *str, struct config_ipport* ip) {
+  return config_param_host_port_wildcard(str, ip, 0);
 }
 
 int config_param_val_int (char *str, int *dst) {
@@ -578,14 +578,14 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
     r = config_param_val_bool(v, &cfg->PREFER_SERVER_CIPHERS);
   }
   else if (strcmp(k, CFG_FRONTEND) == 0) {
-    r = config_param_host_port_wildcard(v, &cfg->FRONT.host, &cfg->FRONT.port, &cfg->FRONT.mode, 1);
+    r = config_param_host_port_wildcard(v, &cfg->FRONT, 1);
 	if (cfg->FRONT.mode != CONN_INET) {
 		config_error_set("Bad frontend address: not inet address");
 		r = 0;
 	}
   }
   else if (strcmp(k, CFG_BACKEND) == 0) {
-    r = config_param_host_port(v, &cfg->BACK.host, &cfg->BACK.port, &cfg->BACK.mode);
+    r = config_param_host_port(v, &cfg->BACK);
   }
   else if (strcmp(k, CFG_WORKERS) == 0) {
     r = config_param_val_intl_pos(v, &cfg->NCORES);
@@ -822,19 +822,23 @@ char * config_disp_gid (gid_t gid) {
   return tmp_buf;
 }
 
-char * config_disp_hostport (char *host, char *port) {
+char * config_disp_hostport (const struct config_ipport* ip) {
   memset(tmp_buf, '\0', sizeof(tmp_buf));
-  if (host == NULL && port == NULL)
+  if (ip->host == NULL && ip->port == NULL)
     return "";
 
+  if (ip->mode == CONN_PIPE) {
+    strcat(tmp_buf,"pipe://");
+  }
+
   strcat(tmp_buf, "[");
-  if (host == NULL)
+  if (ip->host == NULL)
     strcat(tmp_buf, "*");
   else {
-    strncat(tmp_buf, host, 40);
+    strncat(tmp_buf, ip->host, 40);
   }
   strcat(tmp_buf, "]:");
-  strncat(tmp_buf, port, 5);
+  strncat(tmp_buf, ip->port, 5);
   return tmp_buf;
 }
 
@@ -902,8 +906,8 @@ void config_print_usage_fd (char *prog, stud_config *cfg, FILE *out) {
   fprintf(out, "SOCKET:\n");
   fprintf(out, "\n");
   fprintf(out, "  --client                    Enable client proxy mode\n");
-  fprintf(out, "  -b  --backend=HOST,PORT     Backend [connect] (default is \"%s\")\n", config_disp_hostport(cfg->BACK.host, cfg->BACK.port));
-  fprintf(out, "  -f  --frontend=HOST,PORT    Frontend [bind] (default is \"%s\")\n", config_disp_hostport(cfg->FRONT.host, cfg->FRONT.port));
+  fprintf(out, "  -b  --backend=HOST,PORT     Backend [connect] (default is \"%s\")\n", config_disp_hostport(&cfg->BACK));
+  fprintf(out, "  -f  --frontend=HOST,PORT    Frontend [bind] (default is \"%s\")\n", config_disp_hostport(&cfg->FRONT));
 
 #ifdef USE_SHARED_CACHE
   fprintf(out, "\n");
@@ -977,14 +981,14 @@ void config_print_default (FILE *fd, stud_config *cfg) {
   fprintf(fd, "#\n");
   fprintf(fd, "# type: string\n");
   fprintf(fd, "# syntax: [HOST]:PORT\n");
-  fprintf(fd, FMT_QSTR, CFG_FRONTEND, config_disp_hostport(cfg->FRONT.host, cfg->FRONT.port));
+  fprintf(fd, FMT_QSTR, CFG_FRONTEND, config_disp_hostport(&cfg->FRONT));
   fprintf(fd, "\n");
 
   fprintf(fd, "# Upstream server address. REQUIRED.\n");
   fprintf(fd, "#\n");
   fprintf(fd, "# type: string\n");
   fprintf(fd, "# syntax: [HOST]:PORT.\n");
-  fprintf(fd, FMT_QSTR, CFG_BACKEND, config_disp_hostport(cfg->BACK.host, cfg->BACK.port));
+  fprintf(fd, FMT_QSTR, CFG_BACKEND, config_disp_hostport(&cfg->BACK));
   fprintf(fd, "\n");
 
   fprintf(fd, "# SSL x509 certificate file. REQUIRED.\n");
