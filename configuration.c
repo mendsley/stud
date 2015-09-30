@@ -125,6 +125,7 @@ stud_config * config_new (void) {
   r->FRONT_PORT         = strdup("8443");
   r->BACK_IP            = strdup("127.0.0.1");
   r->BACK_PORT          = strdup("8000");
+  r->BACK_CONN_MODE     = CONN_INET;
   r->NCORES             = 1;
   r->CERT_FILES         = NULL;
   r->CIPHER_SUITE       = NULL;
@@ -319,7 +320,7 @@ char * config_param_val_str (char *val) {
   return strdup(val);
 }
 
-int config_param_host_port_wildcard (char *str, char **addr, char **port, int wildcard_okay) {
+int config_param_host_port_wildcard (char *str, char **addr, char **port, BACK_CONNECTION_MODE* mode, int wildcard_okay) {
   int len = (str != NULL) ? strlen(str) : 0;
   if (str == NULL || ! len) {
     config_error_set("Invalid/unset host/port string.");
@@ -329,12 +330,18 @@ int config_param_host_port_wildcard (char *str, char **addr, char **port, int wi
   // address/port buffers
   char port_buf[PORT_LEN];
   char addr_buf[ADDR_LEN];
+  BACK_CONNECTION_MODE mode_buf;
 
   memset(port_buf, '\0', sizeof(port_buf));
   memset(addr_buf, '\0', sizeof(addr_buf));
 
+  // check for pipe://
+  if (len > 8 && strncasecmp(str, "pipe://", 7) == 0) {
+	  if (str[7] != '@') strncpy(addr_buf, str+7, sizeof(addr_buf));
+	  mode_buf = CONN_PIPE;
+  }
   // NEW FORMAT: [address]:port
-  if (*str == '[') {
+  else if (*str == '[') {
     char *ptr = str + 1;
     char *x = strrchr(ptr, ']');
     if (x == NULL) {
@@ -348,6 +355,7 @@ int config_param_host_port_wildcard (char *str, char **addr, char **port, int wi
     // port
     x += 2;
     memcpy(port_buf, x, sizeof(port_buf) - 1);
+	mode_buf = CONN_INET;
   }
   // OLD FORMAT: address,port
   else {
@@ -361,15 +369,18 @@ int config_param_host_port_wildcard (char *str, char **addr, char **port, int wi
     memcpy(addr_buf, str, addr_len);
     // port
     memcpy(port_buf, (++x), sizeof(port_buf));
+	mode_buf = CONN_INET;
   }
 
   // printf("PARSED ADDR '%s', PORT '%s'\n", addr_buf, port_buf);
 
   // check port
   int p = atoi(port_buf);
-  if (p < 1 || p > 65536) {
-    config_error_set("Invalid port number '%s'", port_buf);
-    return 0;
+  if (mode_buf == CONN_INET) {
+    if (p < 1 || p > 65536) {
+      config_error_set("Invalid port number '%s'", port_buf);
+      return 0;
+    }
   }
 
   // write
@@ -385,15 +396,18 @@ int config_param_host_port_wildcard (char *str, char **addr, char **port, int wi
     *addr = strdup(addr_buf);
   }
   // if (**port != NULL) free(*port);
-  *port = strdup(port_buf);
+  if (mode_buf == CONN_INET) {
+    *port = strdup(port_buf);
+  }
+  *mode = mode_buf;
 
   // printf("ADDR FINAL: '%s', '%s'\n", *addr, *port);
 
   return 1;
 }
 
-int config_param_host_port (char *str, char **addr, char **port) {
-  return config_param_host_port_wildcard(str, addr, port, 0);
+int config_param_host_port (char *str, char **addr, char **port, BACK_CONNECTION_MODE* mode) {
+  return config_param_host_port_wildcard(str, addr, port, mode, 0);
 }
 
 int config_param_val_int (char *str, int *dst) {
@@ -559,22 +573,15 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
     r = config_param_val_bool(v, &cfg->PREFER_SERVER_CIPHERS);
   }
   else if (strcmp(k, CFG_FRONTEND) == 0) {
-    r = config_param_host_port_wildcard(v, &cfg->FRONT_IP, &cfg->FRONT_PORT, 1);
+    BACK_CONNECTION_MODE dummyMode;
+    r = config_param_host_port_wildcard(v, &cfg->FRONT_IP, &cfg->FRONT_PORT, &dummyMode, 1);
+	if (dummyMode != CONN_INET) {
+		config_error_set("Bad frontend address: not inet address");
+		r = 0;
+	}
   }
   else if (strcmp(k, CFG_BACKEND) == 0) {
-    int vlen = 0;
-    
-    cfg->BACK_CONN_MODE = CONN_INET;
-    if(v != NULL && (vlen = strlen(v)) > 7 && strncasecmp(v, "pipe://", 6) == 0) {
-      cfg->BACK_CONN_MODE = CONN_PIPE;
-      if(cfg->BACK_IP) {
-        free(cfg->BACK_IP);
-        cfg->BACK_IP = NULL;
-      }
-      config_assign_str(&cfg->BACK_IP,(v+7));
-      if(cfg->BACK_IP[0] == '@') cfg->BACK_IP[0] = '\0';
-    } 
-    else r = config_param_host_port(v, &cfg->BACK_IP, &cfg->BACK_PORT);
+    r = config_param_host_port(v, &cfg->BACK_IP, &cfg->BACK_PORT, &cfg->BACK_CONN_MODE);
   }
   else if (strcmp(k, CFG_WORKERS) == 0) {
     r = config_param_val_intl_pos(v, &cfg->NCORES);
