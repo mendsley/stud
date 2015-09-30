@@ -96,10 +96,10 @@
 
 /* Globals */
 static struct ev_loop *loop;
-static struct addrinfo *backaddr;
+static struct addrinfo **backaddrs;
 static pid_t master_pid;
-static ev_io listener;
-static int listener_socket;
+static ev_io *listeners;
+static int *listener_sockets;
 static int child_num;
 static pid_t *child_pids;
 static SSL_CTX *default_ctx;
@@ -197,6 +197,7 @@ typedef struct proxystate {
 
     ev_io ev_proxy;                     /* proxy read event */
 
+	int index;                          /* Index of the connection */
     int fd_up;                          /* Upstream (client) socket */
     int fd_down;                        /* Downstream (backend) socket */
 
@@ -856,13 +857,13 @@ static void prepare_proxy_line(struct sockaddr* ai_addr) {
 }
 
 /* Create the bound socket in the parent process */
-static int create_main_socket() {
+static int create_main_socket(int index) {
     struct addrinfo *ai, hints;
     memset(&hints, 0, sizeof hints);
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;
-    const int gai_err = getaddrinfo(CONFIG->FRONT.host, CONFIG->FRONT.port,
+    const int gai_err = getaddrinfo(CONFIG->FRONT[index].host, CONFIG->FRONT[index].port,
                                     &hints, &ai);
     if (gai_err != 0) {
         ERR("{getaddrinfo}: [%s]\n", gai_strerror(gai_err));
@@ -902,13 +903,13 @@ static int create_main_socket() {
 
 /* Initiate a clear-text nonblocking connect() to the backend IP on behalf
  * of a newly connected upstream (encrypted) client*/
-static int create_back_socket() {
-    int s = socket(backaddr->ai_family, SOCK_STREAM, CONFIG->BACK.mode == CONN_PIPE ? 0 : IPPROTO_TCP);
+static int create_back_socket(int index) {
+    int s = socket(backaddrs[index]->ai_family, SOCK_STREAM, CONFIG->BACK[index].mode == CONN_PIPE ? 0 : IPPROTO_TCP);
 
     if (s == -1)
       return -1;
 
-    if (CONFIG->BACK.mode != CONN_PIPE) {
+    if (CONFIG->BACK[index].mode != CONN_PIPE) {
         int flag = 1;
         int ret = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
         if (ret == -1) {
@@ -978,9 +979,9 @@ static void handle_socket_errno(proxystate *ps, int backend) {
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
 }
 /* Start connect to backend */
-static int start_connect(proxystate *ps) {
+static int start_connect(int index, proxystate *ps) {
     int t = 1;
-    t = connect(ps->fd_down, backaddr->ai_addr, backaddr->ai_addrlen);
+    t = connect(ps->fd_down, backaddrs[index]->ai_addr, backaddrs[index]->ai_addrlen);
     if (t == 0 || errno == EINPROGRESS || errno == EINTR) {
         ev_io_start(loop, &ps->ev_w_connect);
         return 0;
@@ -1064,7 +1065,7 @@ static void handle_connect(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     int t;
     proxystate *ps = (proxystate *)w->data;
-    t = connect(ps->fd_down, backaddr->ai_addr, backaddr->ai_addrlen);
+    t = connect(ps->fd_down, backaddrs[ps->index]->ai_addr, backaddrs[ps->index]->ai_addrlen);
     if (!t || errno == EISCONN || !errno) {
         ev_io_stop(loop, &ps->ev_w_connect);
 
@@ -1110,7 +1111,7 @@ static void start_handshake(proxystate *ps, int err) {
 
 /* After OpenSSL is done with a handshake, re-wire standard read/write handlers
  * for data transmission */
-static void end_handshake(proxystate *ps) {
+static void end_handshake(int index, proxystate *ps) {
     char tcp6_address_string[INET6_ADDRSTRLEN];
     size_t written = 0;
     ev_io_stop(loop, &ps->ev_r_handshake);
@@ -1176,7 +1177,7 @@ static void end_handshake(proxystate *ps) {
             }
         }
         /* start connect now */
-        if (0 != start_connect(ps)) {
+        if (0 != start_connect(index, ps)) {
             return;
         }
     }
@@ -1248,7 +1249,7 @@ static void client_handshake(struct ev_loop *loop, ev_io *w, int revents) {
 
     t = SSL_do_handshake(ps->ssl);
     if (t == 1) {
-        end_handshake(ps);
+        end_handshake(ps->index, ps);
     }
     else {
         int err = SSL_get_error(ps->ssl, t);
@@ -1371,6 +1372,7 @@ static void ssl_write(struct ev_loop *loop, ev_io *w, int revents) {
 static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     (void) loop;
+	const int index = (w-listeners);
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
@@ -1413,7 +1415,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    int back = create_back_socket();
+    int back = create_back_socket(index);
 
     if (back == -1) {
         close(client);
@@ -1433,6 +1435,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
 
+	ps->index = index;
     ps->fd_up = client;
     ps->fd_down = back;
     ps->ssl = ssl;
@@ -1502,15 +1505,17 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
     if (ppid != master_pid) {
         ERR("{core} Process %d detected parent death, closing listener socket.\n", child_num);
         ev_timer_stop(loop, w);
-        ev_io_stop(loop, &listener);
-        close(listener_socket);
+		for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+			ev_io_stop(loop, &listeners[ii]);
+			close(listener_sockets[ii]);
+		}
     }
-
 }
 
 static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     (void) loop;
+	const int index = (w-listeners);
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
@@ -1547,7 +1552,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    int back = create_back_socket();
+    int back = create_back_socket(index);
 
     if (back == -1) {
         close(client);
@@ -1605,7 +1610,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     SSL_set_app_data(ssl, ps);
 
     ev_io_start(loop, &ps->ev_r_clear);
-    start_connect(ps); /* start connect */
+    start_connect(index, ps); /* start connect */
 }
 
 /* Set up the child (worker) process including libev event loop, read event
@@ -1635,9 +1640,12 @@ static void handle_connections() {
     ev_timer_init(&timer_ppid_check, check_ppid, 1.0, 1.0);
     ev_timer_start(loop, &timer_ppid_check);
 
-    ev_io_init(&listener, (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_socket, EV_READ);
-    listener.data = default_ctx;
-    ev_io_start(loop, &listener);
+	listeners = malloc(CONFIG->NUM_FRONT*sizeof(ev_io));
+	for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+		ev_io_init(&listeners[ii], (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_sockets[ii], EV_READ);
+		listeners[ii].data = default_ctx;
+		ev_io_start(loop, &listeners[ii]);
+	}
 
     ev_loop(loop, 0);
     ERR("{core} Child %d exiting.\n", child_num);
@@ -1662,38 +1670,42 @@ void drop_privileges() {
 void init_globals() {
     /* backaddr */
 
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof hints);
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_flags = 0;
+	backaddrs = (struct addrinfo **)malloc(CONFIG->NUM_BACK*sizeof(struct addrinfo*));
+	for (int ii = 0; ii < CONFIG->NUM_BACK; ++ii) {
+    	struct addrinfo hints;
+    	memset(&hints, 0, sizeof hints);
+    	hints.ai_family = AF_UNSPEC;
+    	hints.ai_socktype = SOCK_STREAM;
+    	hints.ai_flags = 0;
 
-    if (CONFIG->BACK.mode == CONN_PIPE) {
-        backaddr = (struct addrinfo *)malloc(sizeof(struct addrinfo));
-        if (backaddr == 0) {
-            ERR("{malloc}: [%s]", "allocate sockaddr_un failed");
-            exit(1);
-        }
+    	if (CONFIG->BACK[ii].mode == CONN_PIPE) {
+			struct addrinfo* backaddr = (struct addrinfo *)malloc(sizeof(struct addrinfo));
+    	    if (backaddr == 0) {
+    	        ERR("{malloc}: [%s]", "allocate sockaddr_un failed");
+    	        exit(1);
+    	    }
 
-        memset(backaddr, 0, sizeof(struct addrinfo));
-        
-        backaddr->ai_socktype = SOCK_STREAM;
-        backaddr->ai_addrlen = sizeof(struct sockaddr_un);
-		backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
-        struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
-        backaddr->ai_family = addr->sun_family = AF_UNIX;
-        
-        strncpy(addr->sun_path, CONFIG->BACK.host, sizeof(addr->sun_path));
-    } 
-    else {
-        
-        const int gai_err = getaddrinfo(CONFIG->BACK.host, CONFIG->BACK.port,
-                                        &hints, &backaddr);
-        if (gai_err != 0) {
-            ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));
-            exit(1);
-        }
-    }
+    	    memset(backaddr, 0, sizeof(struct addrinfo));
+    	    
+    	    backaddr->ai_socktype = SOCK_STREAM;
+    	    backaddr->ai_addrlen = sizeof(struct sockaddr_un);
+			backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
+    	    struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
+    	    backaddr->ai_family = addr->sun_family = AF_UNIX;
+    	    
+    	    strncpy(addr->sun_path, CONFIG->BACK[ii].host, sizeof(addr->sun_path));
+			backaddrs[ii] = backaddr;
+    	} 
+    	else {
+    	    
+    	    const int gai_err = getaddrinfo(CONFIG->BACK[ii].host, CONFIG->BACK[ii].port,
+    	                                    &hints, &backaddrs[ii]);
+    	    if (gai_err != 0) {
+    	        ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));
+    	        exit(1);
+    	    }
+    	}
+	}
 
 #ifdef USE_SHARED_CACHE
     if (CONFIG->SHARED_CACHE) {
@@ -1939,7 +1951,10 @@ int main(int argc, char **argv) {
 
     init_globals();
 
-    listener_socket = create_main_socket();
+	listener_sockets = malloc(CONFIG->NUM_FRONT*sizeof(int));
+	for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+		listener_sockets[ii] = create_main_socket(ii);
+	}
 
 #ifdef USE_SHARED_CACHE
     if (CONFIG->SHCUPD_PORT) {

@@ -121,12 +121,16 @@ stud_config * config_new (void) {
   r->CHROOT             = NULL;
   r->UID                = 0;
   r->GID                = 0;
-  r->FRONT.host         = NULL;
-  r->FRONT.port         = strdup("8443");
-  r->FRONT.mode         = CONN_INET;
-  r->BACK.host          = strdup("127.0.0.1");
-  r->BACK.port          = strdup("8000");
-  r->BACK.mode          = CONN_INET;
+  r->NUM_FRONT          = 1;
+  r->NUM_BACK           = 1;
+  r->FRONT              = malloc(sizeof(struct config_ipport));
+  r->FRONT[0].host      = NULL;
+  r->FRONT[0].port      = strdup("8443");
+  r->FRONT[0].mode      = CONN_INET;
+  r->BACK               = malloc(sizeof(struct config_ipport));
+  r->BACK[0].host       = strdup("127.0.0.1");
+  r->BACK[0].port       = strdup("8000");
+  r->BACK[0].mode       = CONN_INET;
   r->NCORES             = 1;
   r->CERT_FILES         = NULL;
   r->CIPHER_SUITE       = NULL;
@@ -161,14 +165,23 @@ static void config_destroy_ipport(struct config_ipport* ip) {
 	ip->host = ip->port = NULL;
 }
 
+static void config_destroy_ipports(int num, struct config_ipport* ips) {
+  if (ips) {
+    for (int ii = 0; ii < num; ++ii) {
+      config_destroy_ipport(&ips[ii]);
+    }
+    free(ips);
+  }
+}
+
 void config_destroy (stud_config *cfg) {
   // printf("config_destroy() in pid %d: %p\n", getpid(), cfg);
   if (cfg == NULL) return;
 
   // free all members!
   if (cfg->CHROOT != NULL) free(cfg->CHROOT);
-  config_destroy_ipport(&cfg->FRONT);
-  config_destroy_ipport(&cfg->BACK);
+  config_destroy_ipports(cfg->NUM_FRONT, cfg->FRONT);
+  config_destroy_ipports(cfg->NUM_BACK, cfg->BACK);
   if (cfg->CERT_FILES != NULL) {
     struct cert_files *curr = cfg->CERT_FILES, *next;
     while (cfg->CERT_FILES != NULL) {
@@ -325,94 +338,125 @@ char * config_param_val_str (char *val) {
   return strdup(val);
 }
 
-int config_param_host_port_wildcard (char *str, struct config_ipport* ip, int wildcard_okay) {
+int config_param_host_port_wildcard (char *str, int* num, struct config_ipport** ips, int wildcard_okay) {
   int len = (str != NULL) ? strlen(str) : 0;
   if (str == NULL || ! len) {
     config_error_set("Invalid/unset host/port string.");
     return 0;
   }
 
-  // address/port buffers
-  char port_buf[PORT_LEN];
-  char addr_buf[ADDR_LEN];
-  CONNECTION_MODE mode_buf;
+  int lnum = 0;
+  struct config_ipport* locals = NULL;
 
-  memset(port_buf, '\0', sizeof(port_buf));
-  memset(addr_buf, '\0', sizeof(addr_buf));
+  int keepGoing = 1;
+  while (keepGoing) {
+    // address/port buffers
+    char port_buf[PORT_LEN];
+    char addr_buf[ADDR_LEN];
+    CONNECTION_MODE mode_buf;
 
-  // check for pipe://
-  if (len > 8 && strncasecmp(str, "pipe://", 7) == 0) {
-	  if (str[7] != '@') strncpy(addr_buf, str+7, sizeof(addr_buf));
-	  mode_buf = CONN_PIPE;
-  }
-  // NEW FORMAT: [address]:port
-  else if (*str == '[') {
-    char *ptr = str + 1;
-    char *x = strrchr(ptr, ']');
-    if (x == NULL) {
-      config_error_set("Invalid address '%s'.", str);
-      return 0;
+    memset(port_buf, '\0', sizeof(port_buf));
+    memset(addr_buf, '\0', sizeof(addr_buf));
+
+    char *n = strchr(str, ';');
+	keepGoing = (n != NULL);
+	if (n == NULL) n = str+strlen(str);
+
+    // check for pipe://
+    if (len > 8 && strncasecmp(str, "pipe://", 7) == 0) {
+      if (str[7] != '@') {
+		strncpy(addr_buf, str+7, n-str-7);
+	  }
+      mode_buf = CONN_PIPE;
     }
+    // NEW FORMAT: [address]:port
+    else if (*str == '[') {
+      char *ptr = str + 1;
+      char *x = strchr(ptr, ']');
+      if (x == NULL) {
+		config_destroy_ipports(lnum, locals);
+        config_error_set("Invalid address '%s'.", str);
+        return 0;
+      }
 
-    // address
-    memcpy(addr_buf, ptr, (x - ptr));
+      // address
+      memcpy(addr_buf, ptr, (x - ptr));
 
-    // port
-    x += 2;
-    memcpy(port_buf, x, sizeof(port_buf) - 1);
-	mode_buf = CONN_INET;
-  }
-  // OLD FORMAT: address,port
-  else {
-    char *x = strrchr(str, ',');
-    if (x == NULL) {
-      config_error_set("Invalid address string '%s'", str);
-      return 0;
+      // port
+      x += 2;
+      memcpy(port_buf, x, n-x);
+      mode_buf = CONN_INET;
     }
-    // addr
-    int addr_len = x - str;
-    memcpy(addr_buf, str, addr_len);
-    // port
-    memcpy(port_buf, (++x), sizeof(port_buf));
-	mode_buf = CONN_INET;
-  }
-
-  // printf("PARSED ADDR '%s', PORT '%s'\n", addr_buf, port_buf);
-
-  // check port
-  int p = atoi(port_buf);
-  if (mode_buf == CONN_INET) {
-    if (p < 1 || p > 65536) {
-      config_error_set("Invalid port number '%s'", port_buf);
-      return 0;
-    }
-  }
-
-  // write
-  if (strcmp(addr_buf, "*") == 0) {
-    if (wildcard_okay)
-      free(ip->host);
+    // OLD FORMAT: address,port
     else {
-      config_error_set("Invalid address: wildcards are not allowed.");
-      return 0;
+      char *x = strchr(str, ',');
+      if (x == NULL) {
+		config_destroy_ipports(lnum, locals);
+        config_error_set("Invalid address string '%s'", str);
+        return 0;
+      }
+      // addr
+      int addr_len = x - str;
+      memcpy(addr_buf, str, addr_len);
+      // port
+	  ++x;
+      memcpy(port_buf, x, n-x);
+      mode_buf = CONN_INET;
     }
-  } else {
-    //if (*addr != NULL) free(*addr);
-    ip->host = strdup(addr_buf);
-  }
-  // if (**port != NULL) free(*port);
-  if (mode_buf == CONN_INET) {
-    ip->port = strdup(port_buf);
-  }
-  ip->mode = mode_buf;
 
+	str = n+1;
+
+    // printf("PARSED ADDR '%s', PORT '%s'\n", addr_buf, port_buf);
+
+    // check port
+    int p = atoi(port_buf);
+    if (mode_buf == CONN_INET) {
+      if (p < 1 || p > 65536) {
+		config_destroy_ipports(lnum, locals);
+        config_error_set("Invalid port number '%s'", port_buf);
+        return 0;
+      }
+    }
+
+	++lnum;
+	locals = realloc(locals, lnum*sizeof(struct config_ipport));
+	locals[lnum-1].host = locals[lnum-1].port = NULL;
+
+    // write
+    if (strcmp(addr_buf, "*") == 0) {
+      if (wildcard_okay)
+		  locals[lnum-1].host = NULL;
+      else {
+		config_destroy_ipports(lnum, locals);
+        config_error_set("Invalid address: wildcards are not allowed.");
+        return 0;
+      }
+    } else {
+      //if (*addr != NULL) free(*addr);
+      locals[lnum-1].host = strdup(addr_buf);
+    }
+    // if (**port != NULL) free(*port);
+    if (mode_buf == CONN_INET) {
+      locals[lnum-1].port = strdup(port_buf);
+    }
+    locals[lnum-1].mode = mode_buf;
+  }
+
+  if (lnum == 0) {
+	  config_destroy_ipports(lnum, locals);
+	  config_error_set("Invalid addresses: no addresses specified.");
+	  return 0;
+  }
+
+  *ips = locals;
+  *num = lnum;
   // printf("ADDR FINAL: '%s', '%s'\n", *addr, *port);
 
   return 1;
 }
 
-int config_param_host_port (char *str, struct config_ipport* ip) {
-  return config_param_host_port_wildcard(str, ip, 0);
+int config_param_host_port (char *str, int* num, struct config_ipport** ip) {
+  return config_param_host_port_wildcard(str, num, ip, 0);
 }
 
 int config_param_val_int (char *str, int *dst) {
@@ -578,14 +622,18 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
     r = config_param_val_bool(v, &cfg->PREFER_SERVER_CIPHERS);
   }
   else if (strcmp(k, CFG_FRONTEND) == 0) {
-    r = config_param_host_port_wildcard(v, &cfg->FRONT, 1);
-	if (cfg->FRONT.mode != CONN_INET) {
-		config_error_set("Bad frontend address: not inet address");
-		r = 0;
+    config_destroy_ipports(cfg->NUM_FRONT, cfg->FRONT);
+    r = config_param_host_port_wildcard(v, &cfg->NUM_FRONT, &cfg->FRONT, 1);
+	for (int ii = 0; ii < cfg->NUM_FRONT; ++ii) {
+	  if (cfg->FRONT[ii].mode != CONN_INET) {
+        config_error_set("Bad frontend address: address %d is not inet address", ii);
+        r = 0;
+	  }
 	}
   }
   else if (strcmp(k, CFG_BACKEND) == 0) {
-    r = config_param_host_port(v, &cfg->BACK);
+    config_destroy_ipports(cfg->NUM_BACK, cfg->BACK);
+    r = config_param_host_port(v, &cfg->NUM_BACK, &cfg->BACK);
   }
   else if (strcmp(k, CFG_WORKERS) == 0) {
     r = config_param_val_intl_pos(v, &cfg->NCORES);
@@ -822,23 +870,27 @@ char * config_disp_gid (gid_t gid) {
   return tmp_buf;
 }
 
-char * config_disp_hostport (const struct config_ipport* ip) {
+char * config_disp_hostport (int num, const struct config_ipport* ip) {
   memset(tmp_buf, '\0', sizeof(tmp_buf));
-  if (ip->host == NULL && ip->port == NULL)
-    return "";
+  for (int ii = 0; ii < num; ++ii) {
+    if (ii > 0) strcat(tmp_buf, ";");
 
-  if (ip->mode == CONN_PIPE) {
-    strcat(tmp_buf,"pipe://");
-  }
+    if (ip[ii].host == NULL && ip[ii].port == NULL)
+      continue;
 
-  strcat(tmp_buf, "[");
-  if (ip->host == NULL)
-    strcat(tmp_buf, "*");
-  else {
-    strncat(tmp_buf, ip->host, 40);
+    if (ip[ii].mode == CONN_PIPE) {
+      strcat(tmp_buf,"pipe://");
+    }
+
+    strcat(tmp_buf, "[");
+    if (ip[ii].host == NULL)
+      strcat(tmp_buf, "*");
+    else {
+      strncat(tmp_buf, ip[ii].host, 40);
+    }
+    strcat(tmp_buf, "]:");
+    strncat(tmp_buf, ip[ii].port, 5);
   }
-  strcat(tmp_buf, "]:");
-  strncat(tmp_buf, ip->port, 5);
   return tmp_buf;
 }
 
@@ -906,8 +958,8 @@ void config_print_usage_fd (char *prog, stud_config *cfg, FILE *out) {
   fprintf(out, "SOCKET:\n");
   fprintf(out, "\n");
   fprintf(out, "  --client                    Enable client proxy mode\n");
-  fprintf(out, "  -b  --backend=HOST,PORT     Backend [connect] (default is \"%s\")\n", config_disp_hostport(&cfg->BACK));
-  fprintf(out, "  -f  --frontend=HOST,PORT    Frontend [bind] (default is \"%s\")\n", config_disp_hostport(&cfg->FRONT));
+  fprintf(out, "  -b  --backend=HOST,PORT     Backend [connect] (default is \"%s\")\n", config_disp_hostport(cfg->NUM_BACK, cfg->BACK));
+  fprintf(out, "  -f  --frontend=HOST,PORT    Frontend [bind] (default is \"%s\")\n", config_disp_hostport(cfg->NUM_FRONT, cfg->FRONT));
 
 #ifdef USE_SHARED_CACHE
   fprintf(out, "\n");
@@ -981,14 +1033,14 @@ void config_print_default (FILE *fd, stud_config *cfg) {
   fprintf(fd, "#\n");
   fprintf(fd, "# type: string\n");
   fprintf(fd, "# syntax: [HOST]:PORT\n");
-  fprintf(fd, FMT_QSTR, CFG_FRONTEND, config_disp_hostport(&cfg->FRONT));
+  fprintf(fd, FMT_QSTR, CFG_FRONTEND, config_disp_hostport(cfg->NUM_FRONT, cfg->FRONT));
   fprintf(fd, "\n");
 
   fprintf(fd, "# Upstream server address. REQUIRED.\n");
   fprintf(fd, "#\n");
   fprintf(fd, "# type: string\n");
   fprintf(fd, "# syntax: [HOST]:PORT.\n");
-  fprintf(fd, FMT_QSTR, CFG_BACKEND, config_disp_hostport(&cfg->BACK));
+  fprintf(fd, FMT_QSTR, CFG_BACKEND, config_disp_hostport(cfg->NUM_BACK, cfg->BACK));
   fprintf(fd, "\n");
 
   fprintf(fd, "# SSL x509 certificate file. REQUIRED.\n");
@@ -1337,6 +1389,9 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
 
   if (cfg->WRITE_IP_OCTET && cfg->PROXY_PROXY_LINE)
     config_die("Options --write-ip and --proxy-proxy are mutually exclusive.");
+
+  if (cfg->NUM_FRONT != cfg->NUM_BACK)
+    config_die("Must specify same number of backends as frontends.");
 
   if (cfg->DAEMONIZE) {
     cfg->SYSLOG = 1;

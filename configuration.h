@@ -58,8 +58,10 @@ struct __stud_config {
     char *CHROOT;
     uid_t UID;
     gid_t GID;
-	struct config_ipport FRONT;
-	struct config_ipport BACK;
+	int NUM_FRONT;
+	int NUM_BACK;
+	struct config_ipport *FRONT;
+	struct config_ipport *BACK;
     long NCORES;
     struct cert_files *CERT_FILES;
     char *CIPHER_SUITE;
