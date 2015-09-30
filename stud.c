@@ -862,7 +862,7 @@ static int create_main_socket() {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE | AI_ADDRCONFIG;
-    const int gai_err = getaddrinfo(CONFIG->FRONT_IP, CONFIG->FRONT_PORT,
+    const int gai_err = getaddrinfo(CONFIG->FRONT.host, CONFIG->FRONT.port,
                                     &hints, &ai);
     if (gai_err != 0) {
         ERR("{getaddrinfo}: [%s]\n", gai_strerror(gai_err));
@@ -903,12 +903,12 @@ static int create_main_socket() {
 /* Initiate a clear-text nonblocking connect() to the backend IP on behalf
  * of a newly connected upstream (encrypted) client*/
 static int create_back_socket() {
-    int s = socket(backaddr->ai_family, SOCK_STREAM, CONFIG->BACK_CONN_MODE == CONN_PIPE ? 0 : IPPROTO_TCP);
+    int s = socket(backaddr->ai_family, SOCK_STREAM, CONFIG->BACK.mode == CONN_PIPE ? 0 : IPPROTO_TCP);
 
     if (s == -1)
       return -1;
 
-    if (CONFIG->BACK_CONN_MODE != CONN_PIPE) {
+    if (CONFIG->BACK.mode != CONN_PIPE) {
         int flag = 1;
         int ret = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
         if (ret == -1) {
@@ -1668,7 +1668,7 @@ void init_globals() {
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = 0;
 
-    if (CONFIG->BACK_CONN_MODE == CONN_PIPE) {
+    if (CONFIG->BACK.mode == CONN_PIPE) {
         backaddr = (struct addrinfo *)malloc(sizeof(struct addrinfo));
         if (backaddr == 0) {
             ERR("{malloc}: [%s]", "allocate sockaddr_un failed");
@@ -1683,11 +1683,11 @@ void init_globals() {
         struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
         backaddr->ai_family = addr->sun_family = AF_UNIX;
         
-        strncpy(addr->sun_path, CONFIG->BACK_IP, sizeof(addr->sun_path));
+        strncpy(addr->sun_path, CONFIG->BACK.host, sizeof(addr->sun_path));
     } 
     else {
         
-        const int gai_err = getaddrinfo(CONFIG->BACK_IP, CONFIG->BACK_PORT,
+        const int gai_err = getaddrinfo(CONFIG->BACK.host, CONFIG->BACK.port,
                                         &hints, &backaddr);
         if (gai_err != 0) {
             ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));

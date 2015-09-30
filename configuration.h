@@ -34,11 +34,17 @@ typedef enum {
 typedef enum {
     CONN_INET,
     CONN_PIPE
-} BACK_CONNECTION_MODE;
+} CONNECTION_MODE;
 
 struct cert_files {
     char *CERT_FILE;
     struct cert_files *NEXT;
+};
+
+struct config_ipport {
+    char* host;
+	char* port;
+	CONNECTION_MODE mode;
 };
 
 /* configuration structure */
@@ -52,11 +58,8 @@ struct __stud_config {
     char *CHROOT;
     uid_t UID;
     gid_t GID;
-    char *FRONT_IP;
-    char *FRONT_PORT;
-    char *BACK_IP;
-    char *BACK_PORT;
-    BACK_CONNECTION_MODE BACK_CONN_MODE;
+	struct config_ipport FRONT;
+	struct config_ipport BACK;
     long NCORES;
     struct cert_files *CERT_FILES;
     char *CIPHER_SUITE;
