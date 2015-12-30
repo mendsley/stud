@@ -1888,22 +1888,27 @@ void daemonize () {
     fclose(stdout);
     fclose(stderr);
 
+	FILE* nulldev = fopen(NULL_DEV, "rw");
+	if (nulldev == NULL) {
+		ERR("Unable to open %s: %s\n", NULL_DEV, strerror(errno));
+		exit(1);
+	}
+
     /* reopen standard streams to null device */
-    stdin = fopen(NULL_DEV, "r");
-    if (stdin == NULL) {
+	if (-1 == dup2(fileno(nulldev), STDIN_FILENO)) {
         ERR("Unable to reopen stdin to %s: %s\n", NULL_DEV, strerror(errno));
-        exit(1);
-    }
-    stdout = fopen(NULL_DEV, "w");
-    if (stdout == NULL) {
+		exit(1);
+	}
+	if (-1 == dup2(fileno(nulldev), STDOUT_FILENO)) {
         ERR("Unable to reopen stdout to %s: %s\n", NULL_DEV, strerror(errno));
-        exit(1);
-    }
-    stderr = fopen(NULL_DEV, "w");
-    if (stderr == NULL) {
+		exit(1);
+	}
+	if (-1 == dup2(fileno(nulldev), STDERR_FILENO)) {
         ERR("Unable to reopen stderr to %s: %s\n", NULL_DEV, strerror(errno));
-        exit(1);
-    }
+		exit(1);
+	}
+
+	fclose(nulldev);
 
     /* this is child, the new master */
     pid_t s = setsid();
