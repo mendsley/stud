@@ -65,6 +65,8 @@
 #include <openssl/asn1.h>
 #include <ev.h>
 
+#include <crypto_secretbox.h>
+
 #include "ringbuffer.h"
 #include "shctx.h"
 #include "configuration.h"
@@ -593,6 +595,57 @@ RSA *load_rsa_privatekey(SSL_CTX *ctx, const char *file) {
 
     return rsa;
 }
+
+//static RSA *load_rsa_privatekey_secretbox(SSL_CTX *ctx) {
+//	BIO *b64Key;
+//	BIO* b64EncryptedKeyCert;
+//	BUF_MEM *keyBuffer;
+//	BUF_MEM *encryptedKeyCertBuffer;
+//	const char* encodedKeycert = getenv("STUD_SECRETBOX_KEYCERT");
+//	const char* encodedSealkey = getenv("STUD_SEALKEY");
+//	char* keycert = 0;
+//
+//	// decode seal key
+//	b64Key = BIO_new(BIO_f_base64());
+//	BIO_set_flags(b64Key, BIO_FLAGS_BASE64_NO_NL);
+//	BIO_push(b64Key, BIO_new(BIO_s_mem()));
+//	BIO_write(b64Key, encodedSealkey, strlen(encodedSealkey));
+//	if (BIO_flush(b64Key) < 1) {
+//		BIO_free_all(b64Key);
+//		ERR("Failed to decode base64 seal key");
+//		return NULL;
+//	}
+//
+//	BIO_get_mem_ptr(b64Key, &keyBuffer);
+//	if (keyBuffer->length != crypto_secretbox_KEYBYTES) {
+//		BIO_free_all(b64Key);
+//		ERR("Seal key is the incorrect size");
+//		return NULL;
+//	}
+//
+//	// decode encrypted key-cert
+//	b64EncryptedKeyCert = BIO_new(BIO_f_base64());
+//	BIO_set_flags(b64EncryptedKeyCert, BIO_FLAGS_BASE64_NO_NL);
+//	BIO_push(b64EncryptedKeyCert, BIO_new(BIO_s_mem()));
+//	BIO_write(b64EncryptedKeyCert, encodedKeycert, strlen(encodedKeycert));
+//	if (BIO_flush(b64EncryptedKeyCert) < 1) {
+//		BIO_free_all(b64Key);
+//		BIO_free_all(b64EncryptedKeyCert);
+//		ERR("Failed to decode base64 encrypted keycert");
+//		return NULL;
+//	}
+//
+//	BIO_get_mem_ptr(b64EncryptedKeyCert, &encryptedKeyCertBuffer);
+//
+//	keycert = malloc(encryptedKeyCertBuffer->length + crypto_secretbox_BOXZEROBYTES);
+//	memset(keycert, 0, crypto_secretbox_BOXZEROBYTES);
+//	memcpy(keycert + crypto_secretbox_BOXZEROBYTES, encryptedKeyCertBuffer->data, encryptedKeyCertBuffer->length);
+//	if (0 != crypto_secretbox_open(
+//
+//	free(keycert);
+//	BIO_free_all(b64EncryptedKeyCert);
+//	BIO_free_all(b64Key);
+//}
 
 #ifndef OPENSSL_NO_TLSEXT
 /*

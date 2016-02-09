@@ -20,6 +20,7 @@
 #include <syslog.h>
 
 #include "configuration.h"
+#include "secret.h"
 #include "version.h"
 
 #define ADDR_LEN 150
@@ -48,6 +49,9 @@
 #define CFG_WRITE_PROXY_V2 "write-proxy-v2"
 #define CFG_PEM_FILE "pem-file"
 #define CFG_PROXY_PROXY "proxy-proxy"
+
+#define SECRETBOX_OPT_GENKEY 1
+#define SECRETBOX_OPT_ENCRYPTPEM 2
 
 #ifdef USE_SHARED_CACHE
   #define CFG_SHARED_CACHE "shared-cache"
@@ -997,6 +1001,12 @@ void config_print_usage_fd (char *prog, stud_config *cfg, FILE *out) {
   fprintf(out, "  -s  --syslog               Send log message to syslog in addition to stderr/stdout\n");
   fprintf(out, "  --syslog-facility=FACILITY Syslog facility to use (Default: \"%s\")\n", config_disp_log_facility(cfg->SYSLOG_FACILITY));
   fprintf(out, "\n");
+  fprintf(out, "SECRETBOX KEY-CERTIFCATE\n");
+  fprintf(out, "      --gen-secretbox-key    Generate a new key for use with secret box certificate\n");
+  fprintf(out, "                             storage. Generated to stdout.\n");
+  fprintf(out, "      --encrypt-keycert      Encrypt the PEM keycert file with the key in the\n");
+  fprintf(out, "                             environment variable STUD_SECRETBOX_KEY and output\n");
+  fprintf(out, "                             the result to stdout.\n");
   fprintf(out, "OTHER OPTIONS:\n");
   fprintf(out, "      --daemon               Fork into background and become a daemon (Default: %s)\n", config_disp_bool(cfg->DAEMONIZE));
   fprintf(out, "      --write-ip             Write 1 octet with the IP family followed by the IP\n");
@@ -1228,6 +1238,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
   int c, i;
   int test_only = 0;
   char *prog;
+  int encryptopt = 0;
 
   struct option long_options[] = {
 #ifndef NO_CONFIG_FILE
@@ -1262,6 +1273,9 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     { CFG_WRITE_PROXY, 0, &cfg->WRITE_PROXY_LINE, 1 },
     { CFG_WRITE_PROXY_V2, 0, &cfg->WRITE_PROXY_LINE_V2, 1 },
     { CFG_PROXY_PROXY, 0, &cfg->PROXY_PROXY_LINE, 1 },
+
+	{ "gen-secretbox-key", 0, &encryptopt, SECRETBOX_OPT_GENKEY },
+	{ "encrypt-keycert", 0, &encryptopt, SECRETBOX_OPT_ENCRYPTPEM },
 
     { "test", 0, NULL, 't' },
     { "version", 0, NULL, 'V' },
@@ -1409,7 +1423,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
   for (i = 0; i < argc; i++) {
     config_param_validate(CFG_PEM_FILE, argv[i], cfg, NULL, 0);
   }
-  if (cfg->PMODE == SSL_SERVER && cfg->CERT_FILES == NULL) {
+  if (encryptopt != SECRETBOX_OPT_GENKEY && cfg->PMODE == SSL_SERVER && cfg->CERT_FILES == NULL) {
     config_die("No x509 certificate PEM file specified!");
   }
 
@@ -1421,5 +1435,23 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     }
     printf("%s configuration looks ok.\n", basename(prog));
     exit(0);
+  }
+
+  switch (encryptopt) {
+  case SECRETBOX_OPT_GENKEY:
+	  fprintf(stderr, "Generating new secretbox key...\n");
+	  if (0 != secret_genkey_tostdout()) {
+		  config_die("Failed to generate a new key.");
+	  }
+	  exit(0);
+	  break;
+
+  case SECRETBOX_OPT_ENCRYPTPEM:
+	  fprintf(stderr, "Encrypting %s...\n", cfg->CERT_FILES->CERT_FILE);
+	  if (0 != secret_encrypt_tostdout(cfg->CERT_FILES->CERT_FILE)) {
+		  config_die("Failed to encrypt file.");
+	  }
+	  exit(0);
+	  break;
   }
 }

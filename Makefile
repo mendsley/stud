@@ -7,9 +7,9 @@ PREFIX  = /usr/local
 BINDIR  = $(PREFIX)/bin
 MANDIR  = $(PREFIX)/share/man
 
-CFLAGS  = -O2 -g -std=c99 -fno-strict-aliasing -Wall -W -D_GNU_SOURCE -DOPENSSL_NO_ENGINE -I/usr/local/include -I/usr/include/libev
-LDFLAGS = -lssl -lcrypto -lz -lev -lm -L/usr/local/lib
-OBJS    = stud.o ringbuffer.o configuration.o dl.o slist.o bufferchain.o
+CFLAGS  = -Wfatal-errors -O2 -g -std=c99 -fno-strict-aliasing -Wall -W -D_GNU_SOURCE -DOPENSSL_NO_ENGINE -I/usr/local/include -I/usr/include/libev -I/usr/include/nacl
+LDFLAGS = -lssl -lcrypto -lz -lev -lm -lnacl -L/usr/local/lib
+OBJS    = stud.o ringbuffer.o configuration.o dl.o slist.o bufferchain.o secret.o
 
 all: realall
 
