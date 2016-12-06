@@ -666,18 +666,22 @@ SSL_CTX *make_ctx(const char *pemfile) {
     /* SSL_SERVER Mode stuff */
     if (SSL_CTX_use_certificate_chain_file(ctx, pemfile) <= 0) {
         ERR_print_errors_fp(stderr);
-        exit(1);
+        SSL_CTX_free(ctx);
+        return NULL;
     }
 
     rsa = load_rsa_privatekey(ctx, pemfile);
     if (!rsa) {
        ERR("Error loading rsa private key\n");
-       exit(1);
+       SSL_CTX_free(ctx);
+       return NULL;
     }
 
     if (SSL_CTX_use_RSAPrivateKey(ctx, rsa) <= 0) {
         ERR_print_errors_fp(stderr);
-        exit(1);
+        RSA_free(rsa);
+        SSL_CTX_free(ctx);
+        return NULL;
     }
 
 #ifndef OPENSSL_NO_DH
@@ -694,12 +698,16 @@ SSL_CTX *make_ctx(const char *pemfile) {
     if (CONFIG->SHARED_CACHE) {
         if (shared_context_init(ctx, CONFIG->SHARED_CACHE) < 0) {
             ERR("Unable to alloc memory for shared cache.\n");
-            exit(1);
+            RSA_free(rsa);
+            SSL_CTX_free(ctx);
+            return NULL;
         }
         if (CONFIG->SHCUPD_PORT) {
             if (compute_secret(rsa, shared_secret) < 0) {
                 ERR("Unable to compute shared secret.\n");
-                exit(1);
+                RSA_free(rsa);
+                SSL_CTX_free(ctx);
+                return NULL;
             }
 
             /* Force tls tickets cause keys differs */
@@ -728,6 +736,9 @@ void init_openssl() {
     // The first file (i.e., the last file listed in config) is always the
     // "default" cert
     default_ctx = make_ctx(CONFIG->CERT_FILES->CERT_FILE);
+    if (!default_ctx) {
+        exit(1);
+    }
 
 #ifndef OPENSSL_NO_TLSEXT
     {
@@ -755,6 +766,9 @@ void init_openssl() {
     // them later
     for (cf = CONFIG->CERT_FILES->NEXT; cf != NULL; cf = cf->NEXT) {
         ctx = make_ctx(cf->CERT_FILE);
+        if (!ctx) {
+            exit(1);
+        }
         f = BIO_new(BIO_s_file());
         // TODO: error checking
         if (!BIO_read_filename(f, cf->CERT_FILE)) {
