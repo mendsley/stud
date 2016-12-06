@@ -117,16 +117,19 @@ struct worker_proc {
 };
 
 struct frontend {
-	int sock;
-	ev_io listener;
-	int backend_index;
+    int sock;
+    ev_io listener;
+    int backend_index;
+    TAILQ_ENTRY(frontend) list;
 };
+
+TAILQ_HEAD(frontend_head, frontend);
+static struct frontend_head frontends;
 
 /* Globals */
 static struct ev_loop *loop;
 static struct addrinfo **backaddrs;
 static pid_t master_pid;
-static struct frontend *frontends;
 static int child_core;
 TAILQ_HEAD(worker_proc_head, worker_proc);
 static struct worker_proc_head worker_procs;
@@ -972,6 +975,17 @@ static int create_main_socket(int index) {
     return s;
 }
 
+static struct frontend* create_frontend(int index) {
+    struct frontend* fe;
+
+    fe = malloc(sizeof(struct frontend));
+
+    fe->sock = create_main_socket(index);
+    fe->backend_index = index;
+
+    return fe;
+}
+
 /* Initiate a clear-text nonblocking connect() to the backend IP on behalf
  * of a newly connected upstream (encrypted) client*/
 static int create_back_socket(const struct addrinfo* ai) {
@@ -1583,13 +1597,14 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
 
 static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
+    struct frontend *fe;
+
     (void) revents;
     pid_t ppid = getppid();
     if (ppid != master_pid) {
         ERR("{core} Process %d detected parent death, closing listener socket.\n", child_core);
         ev_timer_stop(loop, w);
-        for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-            struct frontend* fe = &frontends[ii];
+        TAILQ_FOREACH(fe, &frontends, list) {
             ev_io_stop(loop, &fe->listener);
             close(fe->sock);
         }
@@ -1599,6 +1614,7 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
 static void handle_mgmt_rd(struct ev_loop *loop, ev_io *w, int revents) {
     ssize_t r;
     unsigned current_generation;
+    struct frontend *fe;
 
     (void)revents;
 
@@ -1622,8 +1638,7 @@ static void handle_mgmt_rd(struct ev_loop *loop, ev_io *w, int revents) {
         worker_state = WORKER_EXITING;
 
         /* stop accepting new connections */
-        for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-            struct frontend* fe = &frontends[ii];
+        TAILQ_FOREACH(fe, &frontends, list) {
             ev_io_stop(loop, &fe->listener);
             close(fe->sock);
         }
@@ -1740,6 +1755,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
 /* Set up the child (worker) process including libev event loop, read event
  * on the bound socket, etc */
 static void handle_connections(int mgmt_fd) {
+    struct frontend *fe;
 
     worker_state = WORKER_ACTIVE;
     LOG("{core} Process %d online\n", child_core);
@@ -1770,8 +1786,7 @@ static void handle_connections(int mgmt_fd) {
     ev_io_init(&mgmt_rd, handle_mgmt_rd, mgmt_fd, EV_READ);
     ev_io_start(loop, &mgmt_rd);
 
-    for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-        struct frontend *fe = &frontends[ii];
+    TAILQ_FOREACH(fe, &frontends, list) {
         ev_io_init(&fe->listener, (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, fe->sock, EV_READ);
         fe->listener.data = fe;
         ev_io_start(loop, &fe->listener);
@@ -1800,6 +1815,7 @@ void drop_privileges() {
 void init_globals() {
     /* backaddr */
 
+    TAILQ_INIT(&frontends);
     TAILQ_INIT(&worker_procs);
 
     backaddrs = (struct addrinfo **)malloc(CONFIG->NUM_BACK*sizeof(struct addrinfo*));
@@ -2152,11 +2168,12 @@ int main(int argc, char **argv) {
     init_globals();
 
     // create frontends
-    frontends = malloc(CONFIG->NUM_FRONT*sizeof(struct frontend));
     for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-        struct frontend* fe = &frontends[ii];
-        fe->sock = create_main_socket(ii);
-        fe->backend_index = ii;
+        struct frontend* fe = create_frontend(ii);
+        if (fe == NULL) {
+            exit(1);
+        }
+        TAILQ_INSERT_TAIL(&frontends, fe, list);
     }
 
 #ifdef USE_SHARED_CACHE
