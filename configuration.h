@@ -40,6 +40,7 @@ typedef enum {
 
 struct config_cert_file {
     char *CERT_FILE;
+    int mark;
 
     UT_hash_handle hh;
 };
@@ -47,6 +48,7 @@ struct config_cert_file {
 struct config_ipport {
     char* host;
 	char* port;
+    char* pspec;
 	CONNECTION_MODE mode;
 };
 

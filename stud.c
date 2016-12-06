@@ -136,11 +136,38 @@ struct frontend {
     int sock;
     ev_io listener;
     int backend_index;
+    char* pspec;
     TAILQ_ENTRY(frontend) list;
 };
 
 TAILQ_HEAD(frontend_head, frontend);
 static struct frontend_head frontends;
+
+enum txn_type {
+    TXN_FRONTEND,
+    TXN_CERT,
+};
+
+enum txn_handling {
+    TXN_KEEP,
+    TXN_NEW,
+    TXN_DROP,
+};
+
+struct txn_obj;
+typedef void txn_rollback_f(struct txn_obj* o);
+typedef void txn_commit_f(struct txn_obj* o);
+
+struct txn_obj {
+    enum txn_type type;
+    enum txn_handling handling;
+    void *ctx[2];
+    txn_rollback_f *rollback;
+    txn_commit_f *commit;
+    TAILQ_ENTRY(txn_obj) list;
+};
+
+TAILQ_HEAD(txn_obj_head, txn_obj);
 
 /* Globals */
 static struct ev_loop *loop;
@@ -1093,12 +1120,18 @@ static int create_main_socket(int index) {
 static struct frontend* create_frontend(int index) {
     struct frontend* fe;
 
-    fe = malloc(sizeof(struct frontend));
-
+    fe = calloc(1, sizeof(struct frontend));
+    fe->pspec = strdup(CONFIG->FRONT[index].pspec);
     fe->sock = create_main_socket(index);
     fe->backend_index = index;
 
     return fe;
+}
+
+static void destroy_frontend(struct frontend* fe) {
+    close(fe->sock);
+    free(fe->pspec);
+    free(fe);
 }
 
 /* Initiate a clear-text nonblocking connect() to the backend IP on behalf
@@ -2239,12 +2272,239 @@ void openssl_check_version() {
     LOG("{core} Using OpenSSL version %lx.\n", (unsigned long int) openssl_version);
 }
 
+static struct txn_obj *make_txn_obj(enum txn_type type, enum txn_handling handling, void *ctx0, void *ctx1, txn_rollback_f *rollback, txn_commit_f *commit) {
+    struct txn_obj *o;
+
+    o = calloc(1, sizeof(*o));
+    o->type = type;
+    o->handling = handling;
+    o->ctx[0] = ctx0;
+    o->ctx[1] = ctx1;
+    o->rollback = rollback;
+    o->commit = commit;
+
+    return o;
+}
+
+static void frontend_rollback(struct txn_obj *o) {
+    struct frontend *fe = o->ctx[0];
+
+    if (o->handling == TXN_NEW) {
+        destroy_frontend(fe);
+    }
+}
+
+static void frontend_commit(struct txn_obj *o) {
+    struct frontend *fe = o->ctx[0];
+
+    switch (o->handling) {
+        case TXN_NEW:
+            TAILQ_INSERT_TAIL(&frontends, fe, list);
+            break;
+
+        case TXN_DROP:
+            TAILQ_REMOVE(&frontends, fe, list);
+            destroy_frontend(fe);
+            break;
+
+        case TXN_KEEP:
+            break; // noop
+    }
+}
+
+static int frontend_query(stud_config *cfg, struct txn_obj_head *txn_objs) {
+    struct frontend *fe;
+    struct txn_obj *o;
+    int *mark;
+
+    mark = calloc(cfg->NUM_FRONT, sizeof(int));
+
+    TAILQ_FOREACH(fe, &frontends, list) {
+        int found = 0;
+        for (int ii = 0; ii < cfg->NUM_FRONT; ++ii) {
+            if (strcmp(cfg->FRONT[ii].pspec, fe->pspec) == 0) {
+                mark[ii] = 1;
+                found = 1;
+                break;
+            }
+        }
+
+        if (found) {
+            o = make_txn_obj(TXN_FRONTEND, TXN_KEEP, fe, NULL, frontend_rollback, frontend_commit);
+        } else {
+            o = make_txn_obj(TXN_FRONTEND, TXN_DROP, fe, NULL, frontend_rollback, frontend_commit);
+        }
+
+        TAILQ_INSERT_TAIL(txn_objs, o, list);
+    }
+
+    for (int ii = 0; ii < cfg->NUM_FRONT; ++ii) {
+        if (!mark[ii]) {
+            fe = create_frontend(ii);
+            if (fe == NULL) {
+                return -1;
+            }
+
+            o = make_txn_obj(TXN_FRONTEND, TXN_NEW, fe, NULL, frontend_rollback, frontend_commit);
+            TAILQ_INSERT_TAIL(txn_objs, o, list);
+        }
+    }
+
+    free(mark);
+
+    return 0;
+}
+
+static void cert_rollback(struct txn_obj *o) {
+    struct sslctx *sc = o->ctx[0];
+
+    if (o->handling == TXN_NEW) {
+        sctx_free(sc, NULL);
+    }
+}
+
+static void cert_commit(struct txn_obj *o) {
+    struct sslctx *sc = o->ctx[0];
+    struct sslctx **ctxs;
+    struct sni_name **sn_tab;
+
+    sn_tab = &sni_names;
+    ctxs = &ssl_ctxs;
+
+
+    switch (o->handling) {
+        case TXN_NEW:
+            HASH_ADD_KEYPTR(hh, *ctxs, sc->filename, strlen(sc->filename), sc);
+            insert_sni_names(sc, sn_tab);
+            break;
+
+        case TXN_KEEP:
+            ERR("UNREACHABLE KEEP OF CERT");
+            abort();
+            break;
+
+        case TXN_DROP:
+            HASH_DEL(*ctxs, sc);
+            sctx_free(sc, sn_tab);
+            break;
+    }
+}
+
+static void dcert_rollback(struct txn_obj *o) {
+    cert_rollback(o);
+}
+
+static void dcert_commit(struct txn_obj *o) {
+    struct sslctx *sc = o->ctx[0];
+
+    switch (o->handling) {
+        case TXN_NEW:
+            sctx_free(default_ctx, &sni_names);
+            default_ctx = sc;
+            insert_sni_names(sc, &sni_names);
+            break;
+
+        case TXN_KEEP:
+            // fallthrough
+        case TXN_DROP:
+            ERR("UNREACHABLE DROP OF DEFAULT CERT");
+            abort();
+            break;
+    }
+}
+
+static int cert_query(stud_config *cfg, struct txn_obj_head *txn_objs) {
+
+    struct config_cert_file *cf, *tcf;
+    struct sslctx *sc, *tsc;
+    struct txn_obj *o;
+
+    // drop certs no longer in the config
+    HASH_ITER(hh, ssl_ctxs, sc, tsc) {
+        HASH_FIND_STR(cfg->CERT_FILES, sc->filename, cf);
+        if (cf != NULL) {
+            cf->mark = 1;
+        } else {
+            o = make_txn_obj(TXN_CERT, TXN_DROP, sc, NULL, cert_rollback, cert_commit);
+            TAILQ_INSERT_TAIL(txn_objs, o, list);
+        }
+    }
+
+    // handle default cert
+    if (cfg->CERT_DEFAULT != NULL) {
+        cf = cfg->CERT_DEFAULT;
+        if (strcmp(default_ctx->filename, cf->CERT_FILE) != 0) {
+            sc = make_ctx(cf);
+            if (sc == NULL) {
+                return -1;
+            }
+
+            o = make_txn_obj(TXN_CERT, TXN_NEW, sc, NULL, dcert_rollback, dcert_commit);
+            TAILQ_INSERT_TAIL(txn_objs, o, list);
+        }
+    }
+
+    // add new certs
+    HASH_ITER(hh, cfg->CERT_FILES, cf, tcf) {
+        if (cf->mark) {
+            continue;
+        }
+
+        sc = make_ctx(cf);
+        if (sc == NULL) {
+            return -1;
+        }
+
+        o = make_txn_obj(TXN_CERT, TXN_NEW, sc, NULL, cert_rollback, cert_commit);
+        TAILQ_INSERT_TAIL(txn_objs, o, list);
+    }
+
+    return 0;
+}
+
 static void reconfigure(int argc, char **argv) {
-    int i;
+    int i, rv;
     struct worker_proc *worker, *tworker;
+    struct timeval tv;
+    stud_config *cfg_new;
+    struct txn_obj_head txn_objs;
+    struct txn_obj *to, *tto;
+    double t0, t1;
 
     LOG("{core} Received SIGHUP Initializing configuration reload.\n");
-    (void)argc, (void)argv;
+    gettimeofday(&tv, NULL);
+    t0 = tv.tv_sec + 1e-6 * tv.tv_usec;
+
+    /* Reload config */
+    TAILQ_INIT(&txn_objs);
+    cfg_new = config_new();
+    if (config_parse_cli(argc, argv, cfg_new, &rv) != 0) {
+        ERR("Config reload failed: %s\n", config_error_get());
+        config_destroy(cfg_new);
+        return;
+    }
+
+    if (   frontend_query(cfg_new, &txn_objs) < 0
+        || cert_query(cfg_new, &txn_objs) < 0) {
+        TAILQ_FOREACH_SAFE(to, &txn_objs, list, tto) {
+            TAILQ_REMOVE(&txn_objs, to, list);
+            to->rollback(to);
+            free(to);
+        }
+        ERR("{core} Config reload failed.\n");
+        return;
+    } else {
+        TAILQ_FOREACH_SAFE(to, &txn_objs, list, tto) {
+            TAILQ_REMOVE(&txn_objs, to, list);
+            to->commit(to);
+            free(to);
+        }
+    }
+
+    gettimeofday(&tv, NULL);
+    t1 = tv.tv_sec + 1e-6 * tv.tv_usec;
+
+    LOG("{core} Config reloaded in %.21f seconds.  Starting new child processes.\n", t1-t0);
 
     /* start next worker generation */
     ++worker_generation;

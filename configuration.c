@@ -126,10 +126,12 @@ stud_config * config_new (void) {
   r->FRONT              = malloc(sizeof(struct config_ipport));
   r->FRONT[0].host      = NULL;
   r->FRONT[0].port      = strdup("8443");
+  r->FRONT[0].pspec     = strdup("[*]:8443");
   r->FRONT[0].mode      = CONN_INET;
   r->BACK               = malloc(sizeof(struct config_ipport));
   r->BACK[0].host       = strdup("127.0.0.1");
   r->BACK[0].port       = strdup("8000");
+  r->BACK[0].pspec      = strdup("[127.0.0.1]:8000");
   r->BACK[0].mode       = CONN_INET;
   r->NCORES             = 1;
   r->CERT_DEFAULT       = NULL;
@@ -177,7 +179,8 @@ static void config_destroy_cert_file(struct config_cert_file **pcf) {
 static void config_destroy_ipport(struct config_ipport* ip) {
 	if (ip->host) free(ip->host);
 	if (ip->port) free(ip->port);
-	ip->host = ip->port = NULL;
+    if (ip->pspec) free(ip->pspec);
+	ip->host = ip->port = ip->pspec = NULL;
 }
 
 static void config_destroy_ipports(int num, struct config_ipport* ips) {
@@ -437,7 +440,7 @@ int config_param_host_port_wildcard (char *str, int* num, struct config_ipport**
 
 	++lnum;
 	locals = realloc(locals, lnum*sizeof(struct config_ipport));
-	locals[lnum-1].host = locals[lnum-1].port = NULL;
+	locals[lnum-1].host = locals[lnum-1].port = locals[lnum-1].pspec = NULL;
 
     // write
     if (strcmp(addr_buf, "*") == 0) {
@@ -457,6 +460,17 @@ int config_param_host_port_wildcard (char *str, int* num, struct config_ipport**
       locals[lnum-1].port = strdup(port_buf);
     }
     locals[lnum-1].mode = mode_buf;
+
+    char *pspec;
+    if (mode_buf == CONN_INET) {
+        pspec = calloc(1, strlen(addr_buf) + strlen(port_buf) + 4);
+        sprintf(pspec, "[%s]:%s", addr_buf, port_buf);
+    } else {
+        pspec = calloc(1, strlen(addr_buf)+8);
+        sprintf(pspec, "pipe://%s", addr_buf);
+    }
+
+    locals[lnum-1].pspec = pspec;
   }
 
   if (lnum == 0) {
@@ -608,6 +622,7 @@ int config_param_shcupd_peer (char *str, stud_config *cfg) {
   } else {
     cfg->SHCUPD_PEERS[offset].ip = addr;
     cfg->SHCUPD_PEERS[offset].port = port;
+    cfg->SHCUPD_PEERS[offset].pspec = NULL;
   }
 
   return r;
@@ -1261,6 +1276,7 @@ int config_parse_cli(int argc, char **argv, stud_config *cfg, int *retval) {
   int test_only = 0;
   char *prog;
 
+  optind = 1;
   *retval = 0;
 
   struct option long_options[] = {
