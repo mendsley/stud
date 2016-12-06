@@ -106,6 +106,7 @@ static volatile unsigned n_sighup;
 struct sslctx {
     char *filename;
     SSL_CTX *ctx;
+    X509 *x509;
 };
 
 struct worker_proc {
@@ -671,11 +672,82 @@ static void sctx_free(struct sslctx* sc) {
         return;
     }
 
+    if (sc->x509) {
+        X509_free(sc->x509);
+    }
+
     free(sc->filename);
     SSL_CTX_free(sc->ctx);
     free(sc);
 }
 
+#ifndef OPENSSL_NO_TLSEXT
+static int load_cert_ctx(struct sslctx* so) {
+    X509 *x509;
+    X509_NAME *x509_name;
+    X509_NAME_ENTRY *x509_entry;
+    BIO *f;
+    STACK_OF(GENERAL_NAME) *names = NULL;
+    GENERAL_NAME *name;
+    int i;
+
+#define PUSH_CTX(asn1_str) \
+    do { \
+        (void)asn1_str; \
+        struct ctx_list *cl; \
+        cl = calloc(1, sizeof(*cl)); \
+        ASN1_STRING_to_UTF8((unsigned char**)&cl->servername, asn1_str); \
+        cl->ctx = so; \
+        cl->next = sni_ctxs; \
+        sni_ctxs = cl; \
+    } while (0)
+
+    f = BIO_new(BIO_s_file());
+
+    if (!BIO_read_filename(f, so->filename)) {
+        BIO_free(f);
+        ERR("Could not read certificate '%s'\n", so->filename);
+        return 1;
+    }
+
+    x509 = PEM_read_bio_X509_AUX(f, NULL, NULL, NULL);
+    BIO_free(f);
+
+    so->x509 = x509;
+
+    /* First, look for Subject Alternative Names. */
+    names = X509_get_ext_d2i(x509, NID_subject_alt_name, NULL, NULL);
+    for (i = 0; i < sk_GENERAL_NAME_num(names); ++i) {
+        name = sk_GENERAL_NAME_value(names, i);
+        if (name->type == GEN_DNS) {
+            PUSH_CTX(name->d.dNSName);
+        }
+    }
+
+    if (sk_GENERAL_NAME_num(names) > 0) {
+        sk_GENERAL_NAME_pop_free(names, GENERAL_NAME_free);
+        /* If we found some, don't bother looking any further. */
+        return 0;
+    } else if (names != NULL) {
+        sk_GENERAL_NAME_pop_free(names, GENERAL_NAME_free);
+    }
+
+    /* Now we're left looking at the CN on the cert */
+    x509_name = X509_get_subject_name(x509);
+    i = X509_NAME_get_index_by_NID(x509_name, NID_commonName, -1);
+    if (i < 0) {
+        ERR("Could not find Subject Alternative Names or a CN on cert %s\n", so->filename);
+        return 1;
+    }
+
+    x509_entry = X509_NAME_get_entry(x509_name, i);
+#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#define X509_NAME_ENTRY_get_data(e) (e->value)
+#endif
+    PUSH_CTX(X509_NAME_ENTRY_get_data(x509_entry));
+
+    return 0;
+}
 
 /*
  * Initialize an SSL context
@@ -715,9 +787,10 @@ struct sslctx *make_ctx(const char *pemfile) {
         SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
     }
 
-    sc = malloc(sizeof(struct sslctx));
+    sc = calloc(1, sizeof(struct sslctx));
     sc->filename = strdup(pemfile);
     sc->ctx = ctx;
+    sc->x509 = NULL;
 
     if (CONFIG->PMODE == SSL_CLIENT) {
         return sc;
@@ -752,6 +825,12 @@ struct sslctx *make_ctx(const char *pemfile) {
     if (!SSL_CTX_set_tlsext_servername_callback(ctx, sni_switch_ctx)) {
         ERR("Error setting up SNI support\n");
     }
+
+    if (load_cert_ctx(sc) != 0) {
+        RSA_free(rsa);
+        sctx_free(sc);
+        return NULL;
+    }
 #endif /* OPENSSL_NO_TLSEXT */
 
 #ifdef USE_SHARED_CACHE
@@ -783,6 +862,7 @@ struct sslctx *make_ctx(const char *pemfile) {
     RSA_free(rsa);
     return sc;
 }
+#endif /* OPENSSL_NO_TLSEXT */
 
 /* Init library and load specified certificate.
  * Establishes a SSL_ctx, to act as a template for
@@ -790,82 +870,6 @@ struct sslctx *make_ctx(const char *pemfile) {
 void init_openssl() {
     SSL_library_init();
     SSL_load_error_strings();
-
-    assert(CONFIG->CERT_FILES != NULL);
-
-    // The first file (i.e., the last file listed in config) is always the
-    // "default" cert
-    default_ctx = make_ctx(CONFIG->CERT_FILES->CERT_FILE);
-    if (!default_ctx) {
-        exit(1);
-    }
-
-#ifndef OPENSSL_NO_TLSEXT
-    {
-    struct cert_files *cf;
-    int i;
-    struct sslctx *ctx;
-    X509 *x509;
-    BIO *f;
-
-    STACK_OF(GENERAL_NAME) *names = NULL;
-    GENERAL_NAME *name;
-
-#define PUSH_CTX(asn1_str, ctx)                                             \
-    do {                                                                    \
-        struct ctx_list *cl;                                                \
-        cl = calloc(1, sizeof(*cl));                                        \
-        ASN1_STRING_to_UTF8((unsigned char **)&cl->servername, asn1_str);   \
-        cl->ctx = ctx;                                                      \
-        cl->next = sni_ctxs;                                                \
-        sni_ctxs = cl;                                                      \
-    } while (0)
-
-    // Go through the list of PEMs and make some SSL contexts for them. We also
-    // keep track of the names associated with each cert so we can do SNI on
-    // them later
-    for (cf = CONFIG->CERT_FILES->NEXT; cf != NULL; cf = cf->NEXT) {
-        ctx = make_ctx(cf->CERT_FILE);
-        if (!ctx) {
-            exit(1);
-        }
-        f = BIO_new(BIO_s_file());
-        // TODO: error checking
-        if (!BIO_read_filename(f, cf->CERT_FILE)) {
-            ERR("Could not read cert '%s'\n", cf->CERT_FILE);
-        }
-        x509 = PEM_read_bio_X509_AUX(f, NULL, NULL, NULL);
-        BIO_free(f);
-
-        // First, look for Subject Alternative Names
-        names = X509_get_ext_d2i(x509, NID_subject_alt_name, NULL, NULL);
-        for (i = 0; i < sk_GENERAL_NAME_num(names); i++) {
-            name = sk_GENERAL_NAME_value(names, i);
-            if (name->type == GEN_DNS) {
-                PUSH_CTX(name->d.dNSName, ctx);
-            }
-        }
-        if (sk_GENERAL_NAME_num(names) > 0) {
-            sk_GENERAL_NAME_pop_free(names, GENERAL_NAME_free);
-            // If we actally found some, don't bother looking any further
-            continue;
-        } else if (names != NULL) {
-            sk_GENERAL_NAME_pop_free(names, GENERAL_NAME_free);
-        }
-
-        // Now we're left looking at the CN on the cert
-        X509_NAME *x509_name = X509_get_subject_name(x509);
-        i = X509_NAME_get_index_by_NID(x509_name, NID_commonName, -1);
-        if (i < 0) {
-            ERR("Could not find Subject Alternative Names or a CN on cert %s\n",
-                    cf->CERT_FILE);
-        }
-        X509_NAME_ENTRY *x509_entry = X509_NAME_get_entry(x509_name, i);
-        PUSH_CTX(x509_entry->value, ctx);
-    }
-    }
-#undef APPEND_CTX
-#endif /* OPENSSL_NO_TLSEXT */
 
 #ifndef OPENSSL_NO_ENGINE
     if (CONFIG->ENGINE) {
@@ -886,6 +890,30 @@ void init_openssl() {
         }
     }
 #endif
+}
+
+static void init_certs() {
+    struct cert_files *cf;
+    struct sslctx* so;
+
+    assert(CONFIG->CERT_FILES != NULL);
+
+    // The first file (i.e., the last file listed in config) is always the
+    // "default" cert
+    default_ctx = make_ctx(CONFIG->CERT_FILES->CERT_FILE);
+    if (!default_ctx) {
+        exit(1);
+    }
+
+    // Go through the list of PEMs and make some SSL contexts for them. We also
+    // keep track of the names associated with each cert so we can do SNI on
+    // them later
+    for (cf = CONFIG->CERT_FILES->NEXT; cf != NULL; cf = cf->NEXT) {
+        so = make_ctx(cf->CERT_FILE);
+        if (so == NULL) {
+            exit(1);
+        }
+    }
 }
 
 static void prepare_proxy_line(struct sockaddr* ai_addr) {
@@ -2184,8 +2212,9 @@ int main(int argc, char **argv) {
     }
 #endif /* USE_SHARED_CACHE */
 
-    /* load certificates, pass to handle_connections */
     init_openssl();
+
+    init_certs();
 
     if (CONFIG->CHROOT && CONFIG->CHROOT[0])
         change_root();
