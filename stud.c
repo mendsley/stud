@@ -103,6 +103,10 @@
 static volatile unsigned n_sigchld;
 static volatile unsigned n_sighup;
 
+struct sslctx {
+    SSL_CTX* ctx;
+};
+
 struct worker_proc {
     pid_t pid;
     int pfd;
@@ -125,7 +129,7 @@ static struct frontend *frontends;
 static int child_core;
 TAILQ_HEAD(worker_proc_head, worker_proc);
 static struct worker_proc_head worker_procs;
-static SSL_CTX *default_ctx;
+static struct sslctx *default_ctx;
 static SSL_SESSION *client_session;
 
 /* current number of active client connections */
@@ -174,7 +178,7 @@ typedef enum _SHUTDOWN_REQUESTOR {
  */
 typedef struct ctx_list {
     char *servername;
-    SSL_CTX *ctx;
+    struct sslctx *ctx;
     struct ctx_list *next;
 } ctx_list;
 
@@ -649,7 +653,7 @@ int sni_switch_ctx(SSL *ssl, int *al, void *data) {
     // it might be nice to Do The Right Thing around star certs.
     for (cl = sni_ctxs; cl != NULL; cl = cl->next) {
         if (strcasecmp(servername, cl->servername) == 0) {
-            SSL_set_SSL_CTX(ssl, cl->ctx);
+            SSL_set_SSL_CTX(ssl, cl->ctx->ctx);
             return SSL_TLSEXT_ERR_NOACK;
         }
     }
@@ -658,13 +662,23 @@ int sni_switch_ctx(SSL *ssl, int *al, void *data) {
 }
 #endif /* OPENSSL_NO_TLSEXT */
 
+static void sctx_free(struct sslctx* sc) {
+    if (sc == NULL) {
+        return;
+    }
+
+    SSL_CTX_free(sc->ctx);
+    free(sc);
+}
+
 
 /*
  * Initialize an SSL context
  */
 
-SSL_CTX *make_ctx(const char *pemfile) {
+struct sslctx *make_ctx(const char *pemfile) {
     SSL_CTX *ctx;
+    struct sslctx* sc;
     RSA *rsa;
 
     long ssloptions = SSL_OP_NO_SSLv2 | SSL_OP_ALL |
@@ -696,28 +710,31 @@ SSL_CTX *make_ctx(const char *pemfile) {
         SSL_CTX_set_options(ctx, SSL_OP_CIPHER_SERVER_PREFERENCE);
     }
 
+    sc = malloc(sizeof(struct sslctx));
+    sc->ctx = ctx;
+
     if (CONFIG->PMODE == SSL_CLIENT) {
-        return ctx;
+        return sc;
     }
 
     /* SSL_SERVER Mode stuff */
     if (SSL_CTX_use_certificate_chain_file(ctx, pemfile) <= 0) {
         ERR_print_errors_fp(stderr);
-        SSL_CTX_free(ctx);
+        sctx_free(sc);
         return NULL;
     }
 
     rsa = load_rsa_privatekey(ctx, pemfile);
     if (!rsa) {
-       ERR("Error loading rsa private key\n");
-       SSL_CTX_free(ctx);
-       return NULL;
+        ERR("Error loading rsa private key\n");
+        sctx_free(sc);
+        return NULL;
     }
 
     if (SSL_CTX_use_RSAPrivateKey(ctx, rsa) <= 0) {
         ERR_print_errors_fp(stderr);
         RSA_free(rsa);
-        SSL_CTX_free(ctx);
+        sctx_free(sc);
         return NULL;
     }
 
@@ -736,14 +753,14 @@ SSL_CTX *make_ctx(const char *pemfile) {
         if (shared_context_init(ctx, CONFIG->SHARED_CACHE) < 0) {
             ERR("Unable to alloc memory for shared cache.\n");
             RSA_free(rsa);
-            SSL_CTX_free(ctx);
+            sctx_free(sc);
             return NULL;
         }
         if (CONFIG->SHCUPD_PORT) {
             if (compute_secret(rsa, shared_secret) < 0) {
                 ERR("Unable to compute shared secret.\n");
                 RSA_free(rsa);
-                SSL_CTX_free(ctx);
+                sctx_free(sc);
                 return NULL;
             }
 
@@ -758,7 +775,7 @@ SSL_CTX *make_ctx(const char *pemfile) {
 #endif
 
     RSA_free(rsa);
-    return ctx;
+    return sc;
 }
 
 /* Init library and load specified certificate.
@@ -781,7 +798,7 @@ void init_openssl() {
     {
     struct cert_files *cf;
     int i;
-    SSL_CTX *ctx;
+    struct sslctx *ctx;
     X509 *x509;
     BIO *f;
 
@@ -1485,7 +1502,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
 
-    SSL *ssl = SSL_new(default_ctx);
+    SSL *ssl = SSL_new(default_ctx->ctx);
     long mode = SSL_MODE_ENABLE_PARTIAL_WRITE;
 #ifdef SSL_MODE_RELEASE_BUFFERS
     mode |= SSL_MODE_RELEASE_BUFFERS;
@@ -1663,7 +1680,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
 
-    SSL *ssl = SSL_new(default_ctx);
+    SSL *ssl = SSL_new(default_ctx->ctx);
     long mode = SSL_MODE_ENABLE_PARTIAL_WRITE;
 #ifdef SSL_MODE_RELEASE_BUFFERS
     mode |= SSL_MODE_RELEASE_BUFFERS;
