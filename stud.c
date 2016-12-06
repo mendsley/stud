@@ -949,13 +949,13 @@ static int create_main_socket(int index) {
 
 /* Initiate a clear-text nonblocking connect() to the backend IP on behalf
  * of a newly connected upstream (encrypted) client*/
-static int create_back_socket(int index) {
-    int s = socket(backaddrs[index]->ai_family, SOCK_STREAM, CONFIG->BACK[index].mode == CONN_PIPE ? 0 : IPPROTO_TCP);
+static int create_back_socket(const struct addrinfo* ai) {
+    int s = socket(ai->ai_family, SOCK_STREAM, ai->ai_family == AF_INET ? IPPROTO_TCP : 0);
 
     if (s == -1)
       return -1;
 
-    if (CONFIG->BACK[index].mode != CONN_PIPE) {
+	if (ai->ai_family == AF_INET) {
         int flag = 1;
         int ret = setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char *)&flag, sizeof(flag));
         if (ret == -1) {
@@ -1035,9 +1035,9 @@ static void handle_socket_errno(proxystate *ps, int backend) {
     shutdown_proxy(ps, SHUTDOWN_CLEAR);
 }
 /* Start connect to backend */
-static int start_connect(int index, proxystate *ps) {
+static int start_connect(const struct addrinfo* ai, proxystate *ps) {
     int t = 1;
-    t = connect(ps->fd_down, backaddrs[index]->ai_addr, backaddrs[index]->ai_addrlen);
+    t = connect(ps->fd_down, ai->ai_addr, ai->ai_addrlen);
     if (t == 0 || errno == EINPROGRESS || errno == EINTR) {
         ev_io_start(loop, &ps->ev_w_connect);
         return 0;
@@ -1233,7 +1233,7 @@ static void end_handshake(int index, proxystate *ps) {
             }
         }
         /* start connect now */
-        if (0 != start_connect(index, ps)) {
+        if (0 != start_connect(backaddrs[index], ps)) {
             return;
         }
     }
@@ -1471,7 +1471,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    int back = create_back_socket(index);
+    int back = create_back_socket(backaddrs[index]);
 
     if (back == -1) {
         close(client);
@@ -1647,7 +1647,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    int back = create_back_socket(index);
+    int back = create_back_socket(backaddrs[index]);
 
     if (back == -1) {
         close(client);
@@ -1706,7 +1706,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ++n_conns;
 
     ev_io_start(loop, &ps->ev_r_clear);
-    start_connect(index, ps); /* start connect */
+    start_connect(backaddrs[index], ps); /* start connect */
 }
 
 /* Set up the child (worker) process including libev event loop, read event
