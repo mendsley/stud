@@ -33,6 +33,7 @@
 #include <sys/un.h>
 #include <netdb.h>
 #include <sys/wait.h>
+#include <sys/queue.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <net/if.h>
@@ -94,6 +95,11 @@
 #endif
 #endif
 
+struct worker_proc {
+    pid_t pid;
+    TAILQ_ENTRY(worker_proc) list;
+};
+
 /* Globals */
 static struct ev_loop *loop;
 static struct addrinfo **backaddrs;
@@ -101,7 +107,8 @@ static pid_t master_pid;
 static ev_io *listeners;
 static int *listener_sockets;
 static int child_num;
-static pid_t *child_pids;
+TAILQ_HEAD(worker_proc_head, worker_proc);
+static struct worker_proc_head worker_procs;
 static SSL_CTX *default_ctx;
 static SSL_SESSION *client_session;
 
@@ -1684,6 +1691,8 @@ void drop_privileges() {
 void init_globals() {
     /* backaddr */
 
+    TAILQ_INIT(&worker_procs);
+
     backaddrs = (struct addrinfo **)malloc(CONFIG->NUM_BACK*sizeof(struct addrinfo*));
     for (int ii = 0; ii < CONFIG->NUM_BACK; ++ii) {
         struct addrinfo hints;
@@ -1743,9 +1752,6 @@ void init_globals() {
         }
     }
 #endif
-    /* child_pids */
-    if ((child_pids = calloc(CONFIG->NCORES, sizeof(pid_t))) == NULL)
-        fail("calloc");
 
     if (CONFIG->SYSLOG)
         openlog("stud", LOG_CONS | LOG_PID | LOG_NDELAY, CONFIG->SYSLOG_FACILITY);
@@ -1757,33 +1763,39 @@ void init_globals() {
  * Each child's index is stored in child_num and its pid is stored in child_pids[child_num]
  * so the parent can manage it later. */
 void start_children(int start_index, int count) {
+    struct worker_proc *worker;
+
     /* don't do anything if we're not allowed to create new children */
     if (!create_workers) return;
 
     for (child_num = start_index; child_num < start_index + count; child_num++) {
-        int pid = fork();
-        if (pid == -1) {
+        worker = calloc(1, sizeof(struct worker_proc));
+        worker->pid = fork();
+        if (worker->pid == -1) {
             ERR("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
             exit(1);
         }
-        else if (pid == 0) { /* child */
+        else if (worker->pid == 0) { /* child */
+            free(worker);
             handle_connections();
             exit(0);
         }
         else { /* parent. Track new child. */
-            child_pids[child_num] = pid;
+            TAILQ_INSERT_TAIL(&worker_procs, worker, list);
         }
     }
 }
 
 /* Forks a new child to replace the old, dead, one with the given PID.*/
 void replace_child_with_pid(pid_t pid) {
-    int i;
+    struct worker_proc *worker;
 
     /* find old child's slot and put a new child there */
-    for (i = 0; i < CONFIG->NCORES; i++) {
-        if (child_pids[i] == pid) {
-            start_children(i, 1);
+    TAILQ_FOREACH(worker, &worker_procs, list) {
+        if (worker->pid == pid) {
+            TAILQ_REMOVE(&worker_procs, worker, list);
+            start_children(0, 1);
+            free(worker);
             return;
         }
     }
@@ -1822,6 +1834,8 @@ static void do_wait(int __attribute__ ((unused)) signo) {
 }
 
 static void sigh_terminate (int __attribute__ ((unused)) signo) {
+    struct worker_proc* worker;
+
     /* don't create any more children */
     create_workers = 0;
 
@@ -1830,11 +1844,9 @@ static void sigh_terminate (int __attribute__ ((unused)) signo) {
         LOG("{core} Received signal %d, shutting down.\n", signo);
 
         /* kill all children */
-        int i;
-        for (i = 0; i < CONFIG->NCORES; i++) {
-            /* LOG("Stopping worker pid %d.\n", child_pids[i]); */
-            if (child_pids[i] > 1 && kill(child_pids[i], SIGTERM) != 0) {
-                ERR("{core} Unable to send SIGTERM to worker pid %d: %s\n", child_pids[i], strerror(errno));
+        TAILQ_FOREACH(worker, &worker_procs, list) {
+            if (worker->pid > 1 && kill(worker->pid, SIGTERM) != 0) {
+                ERR("{core} Unable to send SIGTERM to worker pid %d: %s\n", worker->pid, strerror(errno));
             }
         }
         /* LOG("Shutdown complete.\n"); */
