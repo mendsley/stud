@@ -182,7 +182,7 @@ static union ha_proxy_v2_addr frontend_addr;
  */
 typedef struct proxystate {
     struct bufferchain bc_ssl2clear;          /* Pushing bytes from secure to clear stream */
-	struct bufferchain bc_clear2ssl;    /* Pushing bytes from clear to secure stream */
+    struct bufferchain bc_clear2ssl;    /* Pushing bytes from clear to secure stream */
 
     ev_io ev_r_ssl;                     /* Secure stream write event */
     ev_io ev_w_ssl;                     /* Secure stream read event */
@@ -197,7 +197,7 @@ typedef struct proxystate {
 
     ev_io ev_proxy;                     /* proxy read event */
 
-	int index;                          /* Index of the connection */
+    int index;                          /* Index of the connection */
     int fd_up;                          /* Upstream (client) socket */
     int fd_down;                        /* Downstream (backend) socket */
 
@@ -945,13 +945,13 @@ static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
         close(ps->fd_up);
         close(ps->fd_down);
 
-		ERR_clear_error();
+        ERR_clear_error();
 
         SSL_set_shutdown(ps->ssl, SSL_SENT_SHUTDOWN);
         SSL_free(ps->ssl);
 
-		bufferchain_destroy(&ps->bc_clear2ssl);
-		bufferchain_destroy(&ps->bc_ssl2clear);
+        bufferchain_destroy(&ps->bc_clear2ssl);
+        bufferchain_destroy(&ps->bc_ssl2clear);
         free(ps);
     }
     else {
@@ -1003,13 +1003,13 @@ static void clear_read(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
     int fd = w->fd;
-	int sz;
-	void* buf = bufferchain_get_writeptr(&ps->bc_clear2ssl, &sz);
+    int sz;
+    void* buf = bufferchain_get_writeptr(&ps->bc_clear2ssl, &sz);
     t = recv(fd, buf, sz, 0);
 
     if (t > 0) {
-		bufferchain_commit_write(&ps->bc_clear2ssl, t);
-		if (bufferchain_readable(&ps->bc_clear2ssl) >= MAXIMUM_QUEUED_DATA)
+        bufferchain_commit_write(&ps->bc_clear2ssl, t);
+        if (bufferchain_readable(&ps->bc_clear2ssl) >= MAXIMUM_QUEUED_DATA)
             ev_io_stop(loop, &ps->ev_r_clear);
         if (ps->handshaked)
             safe_enable_io(ps, &ps->ev_w_ssl);
@@ -1034,15 +1034,15 @@ static void clear_write(struct ev_loop *loop, ev_io *w, int revents) {
     int sz = bufferchain_readable(&ps->bc_ssl2clear);
     assert(sz != 0);
 
-	const void* next = bufferchain_get_readptr(&ps->bc_ssl2clear);
+    const void* next = bufferchain_get_readptr(&ps->bc_ssl2clear);
     t = send(fd, next, sz, MSG_NOSIGNAL);
 
     if (t > 0) {
-		bufferchain_commit_read(&ps->bc_ssl2clear, t);
+        bufferchain_commit_read(&ps->bc_ssl2clear, t);
         if (t == sz) {
             if (ps->handshaked)
                 safe_enable_io(ps, &ps->ev_r_ssl);
-			if (0 == bufferchain_readable(&ps->bc_ssl2clear)) {
+            if (0 == bufferchain_readable(&ps->bc_ssl2clear)) {
                 if (ps->want_shutdown) {
                     shutdown_proxy(ps, SHUTDOWN_HARD);
                     return; // dealloc'd
@@ -1073,11 +1073,11 @@ static void handle_connect(struct ev_loop *loop, ev_io *w, int revents) {
             ps->clear_connected = 1;
 
             /* if incoming buffer is not full */
-			if (bufferchain_readable(&ps->bc_clear2ssl) < MAXIMUM_QUEUED_DATA)
+            if (bufferchain_readable(&ps->bc_clear2ssl) < MAXIMUM_QUEUED_DATA)
                 safe_enable_io(ps, &ps->ev_r_clear);
 
             /* if outgoing buffer is not empty */
-			if (0 != bufferchain_readable(&ps->bc_ssl2clear))
+            if (0 != bufferchain_readable(&ps->bc_ssl2clear))
                 // not safe.. we want to resume stream even during half-closed
                 ev_io_start(loop, &ps->ev_w_clear);
         }
@@ -1147,7 +1147,7 @@ static void end_handshake(int index, proxystate *ps) {
                                   "TCP4",
                                   inet_ntoa(addr->sin_addr),
                                   ntohs(addr->sin_port));
-			   bufferchain_write(&ps->bc_ssl2clear, buffer, written);
+               bufferchain_write(&ps->bc_ssl2clear, buffer, written);
                }
                else if (ps->remote_ip.ss_family == AF_INET6) {
                         char buffer[128];
@@ -1159,14 +1159,14 @@ static void end_handshake(int index, proxystate *ps) {
                                   "TCP6",
                                   tcp6_address_string,
                                   ntohs(addr->sin6_port));
-						bufferchain_write(&ps->bc_ssl2clear, buffer, written);
+                        bufferchain_write(&ps->bc_ssl2clear, buffer, written);
             }
         }
         else if (CONFIG->WRITE_IP_OCTET) {
-			const unsigned char sock_family = (unsigned char) ps->remote_ip.ss_family;
+            const unsigned char sock_family = (unsigned char) ps->remote_ip.ss_family;
             assert(ps->remote_ip.ss_family == AF_INET ||
                    ps->remote_ip.ss_family == AF_INET6);
-			bufferchain_write(&ps->bc_ssl2clear, &sock_family, 1);
+            bufferchain_write(&ps->bc_ssl2clear, &sock_family, 1);
             if (ps->remote_ip.ss_family == AF_INET6) {
                 bufferchain_write(&ps->bc_ssl2clear, &((struct sockaddr_in6 *) &ps->remote_ip)
                        ->sin6_addr.s6_addr, 16U);
@@ -1191,11 +1191,11 @@ static void end_handshake(int index, proxystate *ps) {
     }
 
     /* if incoming buffer is not full */
-	if (bufferchain_readable(&ps->bc_ssl2clear) < MAXIMUM_QUEUED_DATA)
+    if (bufferchain_readable(&ps->bc_ssl2clear) < MAXIMUM_QUEUED_DATA)
         safe_enable_io(ps, &ps->ev_r_ssl);
 
     /* if outgoing buffer is not empty */
-	if (0 != bufferchain_readable(&ps->bc_clear2ssl))
+    if (0 != bufferchain_readable(&ps->bc_clear2ssl))
         // not safe.. we want to resume stream even during half-closed
         ev_io_start(loop, &ps->ev_w_ssl);
 }
@@ -1217,7 +1217,7 @@ static void client_proxy_proxy(struct ev_loop *loop, ev_io *w, int revents) {
         shutdown_proxy(ps, SHUTDOWN_SSL);
     }
     else if (t == 1) {
-		if (bufferchain_readable(&ps->bc_ssl2clear) >= MAXIMUM_QUEUED_DATA) {
+        if (bufferchain_readable(&ps->bc_ssl2clear) >= MAXIMUM_QUEUED_DATA) {
             LOG("{client} Error writing PROXY line");
             shutdown_proxy(ps, SHUTDOWN_SSL);
             return;
@@ -1290,7 +1290,7 @@ static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
  * and buffer anything we get for writing to the backend */
 static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
-	int sz;
+    int sz;
     int t;
     proxystate *ps = (proxystate *)w->data;
     if (ps->want_shutdown) {
@@ -1300,8 +1300,8 @@ static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
     void * buf = bufferchain_get_writeptr(&ps->bc_ssl2clear, &sz);
     t = SSL_read(ps->ssl, buf, sz);
 
-	if (SSL_pending(ps->ssl))
-		ev_feed_event(loop, w, EV_READ);
+    if (SSL_pending(ps->ssl))
+        ev_feed_event(loop, w, EV_READ);
 
     /* Fix CVE-2009-3555. Disable reneg if started by client. */
     if (ps->renegotiation) {
@@ -1310,13 +1310,13 @@ static void ssl_read(struct ev_loop *loop, ev_io *w, int revents) {
     }
 
     if (t > 0) {
-		bufferchain_commit_write(&ps->bc_ssl2clear, t);
-		if (bufferchain_readable(&ps->bc_ssl2clear) >= MAXIMUM_QUEUED_DATA) {
+        bufferchain_commit_write(&ps->bc_ssl2clear, t);
+        if (bufferchain_readable(&ps->bc_ssl2clear) >= MAXIMUM_QUEUED_DATA) {
             ev_io_stop(loop, &ps->ev_r_ssl);
-		}
+        }
         if (ps->clear_connected) {
             safe_enable_io(ps, &ps->ev_w_clear);
-		}
+        }
     }
     else {
         int err = SSL_get_error(ps->ssl, t);
@@ -1337,16 +1337,16 @@ static void ssl_write(struct ev_loop *loop, ev_io *w, int revents) {
     proxystate *ps = (proxystate *)w->data;
 
     int sz = bufferchain_readable(&ps->bc_clear2ssl);
-	assert(0 != sz);
+    assert(0 != sz);
 
-	void* next = bufferchain_get_readptr(&ps->bc_clear2ssl);
+    void* next = bufferchain_get_readptr(&ps->bc_clear2ssl);
     t = SSL_write(ps->ssl, next, sz);
     if (t > 0) {
-		bufferchain_commit_read(&ps->bc_clear2ssl, t);
+        bufferchain_commit_read(&ps->bc_clear2ssl, t);
         if (t == sz) {
             if (ps->clear_connected)
                 safe_enable_io(ps, &ps->ev_r_clear); // can be re-enabled b/c we've popped
-			if (0 == bufferchain_readable(&ps->bc_clear2ssl)) {
+            if (0 == bufferchain_readable(&ps->bc_clear2ssl)) {
                 if (ps->want_shutdown) {
                     shutdown_proxy(ps, SHUTDOWN_HARD);
                     return;
@@ -1372,7 +1372,7 @@ static void ssl_write(struct ev_loop *loop, ev_io *w, int revents) {
 static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     (void) loop;
-	const int index = (w-listeners);
+    const int index = (w-listeners);
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
@@ -1435,7 +1435,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
 
-	ps->index = index;
+    ps->index = index;
     ps->fd_up = client;
     ps->fd_down = back;
     ps->ssl = ssl;
@@ -1505,17 +1505,17 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
     if (ppid != master_pid) {
         ERR("{core} Process %d detected parent death, closing listener socket.\n", child_num);
         ev_timer_stop(loop, w);
-		for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-			ev_io_stop(loop, &listeners[ii]);
-			close(listener_sockets[ii]);
-		}
+        for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+            ev_io_stop(loop, &listeners[ii]);
+            close(listener_sockets[ii]);
+        }
     }
 }
 
 static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     (void) loop;
-	const int index = (w-listeners);
+    const int index = (w-listeners);
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
@@ -1640,12 +1640,12 @@ static void handle_connections() {
     ev_timer_init(&timer_ppid_check, check_ppid, 1.0, 1.0);
     ev_timer_start(loop, &timer_ppid_check);
 
-	listeners = malloc(CONFIG->NUM_FRONT*sizeof(ev_io));
-	for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-		ev_io_init(&listeners[ii], (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_sockets[ii], EV_READ);
-		listeners[ii].data = default_ctx;
-		ev_io_start(loop, &listeners[ii]);
-	}
+    listeners = malloc(CONFIG->NUM_FRONT*sizeof(ev_io));
+    for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+        ev_io_init(&listeners[ii], (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_sockets[ii], EV_READ);
+        listeners[ii].data = default_ctx;
+        ev_io_start(loop, &listeners[ii]);
+    }
 
     ev_loop(loop, 0);
     ERR("{core} Child %d exiting.\n", child_num);
@@ -1670,42 +1670,42 @@ void drop_privileges() {
 void init_globals() {
     /* backaddr */
 
-	backaddrs = (struct addrinfo **)malloc(CONFIG->NUM_BACK*sizeof(struct addrinfo*));
-	for (int ii = 0; ii < CONFIG->NUM_BACK; ++ii) {
-    	struct addrinfo hints;
-    	memset(&hints, 0, sizeof hints);
-    	hints.ai_family = AF_UNSPEC;
-    	hints.ai_socktype = SOCK_STREAM;
-    	hints.ai_flags = 0;
+    backaddrs = (struct addrinfo **)malloc(CONFIG->NUM_BACK*sizeof(struct addrinfo*));
+    for (int ii = 0; ii < CONFIG->NUM_BACK; ++ii) {
+        struct addrinfo hints;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_UNSPEC;
+        hints.ai_socktype = SOCK_STREAM;
+        hints.ai_flags = 0;
 
-    	if (CONFIG->BACK[ii].mode == CONN_PIPE) {
-			struct addrinfo* backaddr = (struct addrinfo *)malloc(sizeof(struct addrinfo));
-    	    if (backaddr == 0) {
-    	        ERR("{malloc}: [%s]", "allocate sockaddr_un failed");
-    	        exit(1);
-    	    }
+        if (CONFIG->BACK[ii].mode == CONN_PIPE) {
+            struct addrinfo* backaddr = (struct addrinfo *)malloc(sizeof(struct addrinfo));
+            if (backaddr == 0) {
+                ERR("{malloc}: [%s]", "allocate sockaddr_un failed");
+                exit(1);
+            }
 
-    	    memset(backaddr, 0, sizeof(struct addrinfo));
-    	    
-    	    backaddr->ai_socktype = SOCK_STREAM;
-    	    backaddr->ai_addrlen = sizeof(struct sockaddr_un);
-			backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
-    	    struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
-    	    backaddr->ai_family = addr->sun_family = AF_UNIX;
-    	    
-    	    strncpy(addr->sun_path, CONFIG->BACK[ii].host, sizeof(addr->sun_path));
-			backaddrs[ii] = backaddr;
-    	} 
-    	else {
-    	    
-    	    const int gai_err = getaddrinfo(CONFIG->BACK[ii].host, CONFIG->BACK[ii].port,
-    	                                    &hints, &backaddrs[ii]);
-    	    if (gai_err != 0) {
-    	        ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));
-    	        exit(1);
-    	    }
-    	}
-	}
+            memset(backaddr, 0, sizeof(struct addrinfo));
+            
+            backaddr->ai_socktype = SOCK_STREAM;
+            backaddr->ai_addrlen = sizeof(struct sockaddr_un);
+            backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
+            struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
+            backaddr->ai_family = addr->sun_family = AF_UNIX;
+            
+            strncpy(addr->sun_path, CONFIG->BACK[ii].host, sizeof(addr->sun_path));
+            backaddrs[ii] = backaddr;
+        } 
+        else {
+            
+            const int gai_err = getaddrinfo(CONFIG->BACK[ii].host, CONFIG->BACK[ii].port,
+                                            &hints, &backaddrs[ii]);
+            if (gai_err != 0) {
+                ERR("{getaddrinfo}: [%s]", gai_strerror(gai_err));
+                exit(1);
+            }
+        }
+    }
 
 #ifdef USE_SHARED_CACHE
     if (CONFIG->SHARED_CACHE) {
@@ -1736,7 +1736,7 @@ void init_globals() {
     if (CONFIG->SYSLOG)
         openlog("stud", LOG_CONS | LOG_PID | LOG_NDELAY, CONFIG->SYSLOG_FACILITY);
 
-	bufferchain_startup();
+    bufferchain_startup();
 }
 
 /* Forks COUNT children starting with START_INDEX.
@@ -1888,27 +1888,27 @@ void daemonize () {
     fclose(stdout);
     fclose(stderr);
 
-	FILE* nulldev = fopen(NULL_DEV, "rw");
-	if (nulldev == NULL) {
-		ERR("Unable to open %s: %s\n", NULL_DEV, strerror(errno));
-		exit(1);
-	}
+    FILE* nulldev = fopen(NULL_DEV, "rw");
+    if (nulldev == NULL) {
+        ERR("Unable to open %s: %s\n", NULL_DEV, strerror(errno));
+        exit(1);
+    }
 
     /* reopen standard streams to null device */
-	if (-1 == dup2(fileno(nulldev), STDIN_FILENO)) {
+    if (-1 == dup2(fileno(nulldev), STDIN_FILENO)) {
         ERR("Unable to reopen stdin to %s: %s\n", NULL_DEV, strerror(errno));
-		exit(1);
-	}
-	if (-1 == dup2(fileno(nulldev), STDOUT_FILENO)) {
+        exit(1);
+    }
+    if (-1 == dup2(fileno(nulldev), STDOUT_FILENO)) {
         ERR("Unable to reopen stdout to %s: %s\n", NULL_DEV, strerror(errno));
-		exit(1);
-	}
-	if (-1 == dup2(fileno(nulldev), STDERR_FILENO)) {
+        exit(1);
+    }
+    if (-1 == dup2(fileno(nulldev), STDERR_FILENO)) {
         ERR("Unable to reopen stderr to %s: %s\n", NULL_DEV, strerror(errno));
-		exit(1);
-	}
+        exit(1);
+    }
 
-	fclose(nulldev);
+    fclose(nulldev);
 
     /* this is child, the new master */
     pid_t s = setsid();
@@ -1956,10 +1956,10 @@ int main(int argc, char **argv) {
 
     init_globals();
 
-	listener_sockets = malloc(CONFIG->NUM_FRONT*sizeof(int));
-	for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-		listener_sockets[ii] = create_main_socket(ii);
-	}
+    listener_sockets = malloc(CONFIG->NUM_FRONT*sizeof(int));
+    for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+        listener_sockets[ii] = create_main_socket(ii);
+    }
 
 #ifdef USE_SHARED_CACHE
     if (CONFIG->SHCUPD_PORT) {
