@@ -97,6 +97,8 @@
 
 struct worker_proc {
     pid_t pid;
+    int pfd;
+    unsigned generation;
     int core;
     TAILQ_ENTRY(worker_proc) list;
 };
@@ -113,6 +115,18 @@ static struct worker_proc_head worker_procs;
 static SSL_CTX *default_ctx;
 static SSL_SESSION *client_session;
 
+/* current number of active client connections */
+static uint64_t n_conns;
+
+static unsigned worker_generation;
+
+enum worker_state_e {
+    WORKER_ACTIVE,
+    WORKER_EXITING,
+};
+
+static enum worker_state_e worker_state;
+
 #ifdef USE_SHARED_CACHE
 static ev_io shcupd_listener;
 static int shcupd_socket;
@@ -123,6 +137,8 @@ static unsigned char shared_secret[SHA_DIGEST_LENGTH];
 long openssl_version;
 int create_workers;
 stud_config *CONFIG;
+
+static ev_io mgmt_rd;
 
 static char tcp_proxy_line[128] = "";
 
@@ -951,6 +967,13 @@ static void safe_enable_io(proxystate *ps, ev_io *w) {
         ev_io_start(loop, w);
 }
 
+static void check_exit_state() {
+    if (worker_state == WORKER_EXITING && n_conns == 0) {
+        LOG("{core} Worker %d (gen: %d) in state EXITING is not exiting.\n", child_core, worker_generation);
+        exit(0);
+    }
+}
+
 /* Only enable a libev ev_io event if the proxied connection still
  * has both up and down connected */
 static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
@@ -975,6 +998,9 @@ static void shutdown_proxy(proxystate *ps, SHUTDOWN_REQUESTOR req) {
         bufferchain_destroy(&ps->bc_clear2ssl);
         bufferchain_destroy(&ps->bc_ssl2clear);
         free(ps);
+
+        --n_conns;
+        check_exit_state();
     }
     else {
         ps->want_shutdown = 1;
@@ -1512,6 +1538,8 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     /* Link back proxystate to SSL state */
     SSL_set_app_data(ssl, ps);
 
+    ++n_conns;
+
     if (CONFIG->PROXY_PROXY_LINE) {
         ev_io_start(loop, &ps->ev_proxy);
     }
@@ -1532,6 +1560,44 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
             close(listener_sockets[ii]);
         }
     }
+}
+
+static void handle_mgmt_rd(struct ev_loop *loop, ev_io *w, int revents) {
+    ssize_t r;
+    unsigned current_generation;
+
+    (void)revents;
+
+    /* Read parent's current generation. */
+    r = read(w->fd, &current_generation, sizeof(current_generation));
+    if (r == -1) {
+        if (errno == EWOULDBLOCK || errno == EAGAIN) {
+            return;
+        }
+
+        /* rely on parent process to restart us */
+        ERR("{mgmt} Error in read process. Restarting.");
+        exit(1);
+    } else if (r == 0) {
+        /* parent died */
+        exit(1);
+    }
+
+    if (worker_generation != current_generation) {
+        /* process is being retired by the parent */
+        worker_state = WORKER_EXITING;
+
+        /* stop accepting new connections */
+        for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+            ev_io_stop(loop, &listeners[ii]);
+            close(listener_sockets[ii]);
+        }
+
+        check_exit_state();
+    }
+
+    LOG("{mgmt} Worker %d (gen: %d)_: State %s\n", child_core, worker_generation,
+        (worker_state == WORKER_EXITING) ? "EXITING" : "ACTIVE");
 }
 
 static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
@@ -1631,13 +1697,17 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     /* Link back proxystate to SSL state */
     SSL_set_app_data(ssl, ps);
 
+    ++n_conns;
+
     ev_io_start(loop, &ps->ev_r_clear);
     start_connect(index, ps); /* start connect */
 }
 
 /* Set up the child (worker) process including libev event loop, read event
  * on the bound socket, etc */
-static void handle_connections() {
+static void handle_connections(int mgmt_fd) {
+
+    worker_state = WORKER_ACTIVE;
     LOG("{core} Process %d online\n", child_core);
 
     /* child cannot create new children... */
@@ -1669,8 +1739,12 @@ static void handle_connections() {
         ev_io_start(loop, &listeners[ii]);
     }
 
+    setnonblocking(mgmt_fd);
+    ev_io_init(&mgmt_rd, handle_mgmt_rd, mgmt_fd, EV_READ);
+    ev_io_start(loop, &mgmt_rd);
+
     ev_loop(loop, 0);
-    ERR("{core} Child %d exiting.\n", child_core);
+    ERR("{core} Child %d (gen: %d) exiting.\n", child_core, worker_generation);
     exit(1);
 }
 
@@ -1765,24 +1839,33 @@ void init_globals() {
  * so the parent can manage it later. */
 void start_children(int start_index, int count) {
     struct worker_proc *worker;
+    int pfd[2];
 
     /* don't do anything if we're not allowed to create new children */
     if (!create_workers) return;
 
     for (child_core = start_index; child_core < start_index + count; child_core++) {
         worker = calloc(1, sizeof(struct worker_proc));
+        if (pipe(pfd) != 0) {
+            ERR("{core} pipe() failed: %s\n", strerror(errno));
+            exit(1);
+        }
+        worker->pfd = pfd[1];
         worker->pid = fork();
-        worker->core = child_coret ;
+        worker->generation = worker_generation;
+        worker->core = child_core;
         if (worker->pid == -1) {
             ERR("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
             exit(1);
         }
         else if (worker->pid == 0) { /* child */
+            close(pfd[1]);
             free(worker);
-            handle_connections();
+            handle_connections(pfd[0]);
             exit(0);
         }
         else { /* parent. Track new child. */
+            close(pfd[0]);
             TAILQ_INSERT_TAIL(&worker_procs, worker, list);
         }
     }
@@ -1796,7 +1879,10 @@ void replace_child_with_pid(pid_t pid) {
     TAILQ_FOREACH(worker, &worker_procs, list) {
         if (worker->pid == pid) {
             TAILQ_REMOVE(&worker_procs, worker, list);
-            start_children(worker->core, 1);
+            /* Only replace if it matched the current generation */
+            if (worker->generation == worker_generation) {
+                start_children(worker->core, 1);
+            }
             free(worker);
             return;
         }
