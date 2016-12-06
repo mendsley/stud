@@ -66,6 +66,8 @@
 #include <openssl/asn1.h>
 #include <ev.h>
 
+#include "foreign/uthash.h"
+
 #include "ringbuffer.h"
 #include "shctx.h"
 #include "configuration.h"
@@ -105,8 +107,10 @@ static volatile unsigned n_sighup;
 
 struct sslctx {
     char *filename;
+    char *todo_servername;
     SSL_CTX *ctx;
     X509 *x509;
+    UT_hash_handle hh;
 };
 
 struct worker_proc {
@@ -176,19 +180,7 @@ typedef enum _SHUTDOWN_REQUESTOR {
 } SHUTDOWN_REQUESTOR;
 
 #ifndef OPENSSL_NO_TLSEXT
-/*
- * SSL context linked list. Someday it might be nice to have a more clever data
- * structure here, but assuming the number of SNI certs is small it probably
- * doesn't matter.
- */
-typedef struct ctx_list {
-    char *servername;
-    struct sslctx *ctx;
-    struct ctx_list *next;
-} ctx_list;
-
-static ctx_list *sni_ctxs;
-
+static struct sslctx *ssl_ctxs;
 #endif /* OPENSSL_NO_TLSEXT */
 
 
@@ -641,6 +633,7 @@ RSA *load_rsa_privatekey(SSL_CTX *ctx, const char *file) {
 }
 
 #ifndef OPENSSL_NO_TLSEXT
+
 /*
  * Switch the context of the current SSL object to the most appropriate one
  * based on the SNI header
@@ -649,16 +642,16 @@ int sni_switch_ctx(SSL *ssl, int *al, void *data) {
     (void)data;
     (void)al;
     const char *servername;
-    const ctx_list *cl;
+    const struct sslctx *so, *tso;
 
     servername = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
     if (!servername) return SSL_TLSEXT_ERR_NOACK;
 
     // For now, just compare servernames as case insensitive strings. Someday,
     // it might be nice to Do The Right Thing around star certs.
-    for (cl = sni_ctxs; cl != NULL; cl = cl->next) {
-        if (strcasecmp(servername, cl->servername) == 0) {
-            SSL_set_SSL_CTX(ssl, cl->ctx->ctx);
+    HASH_ITER(hh, ssl_ctxs, so, tso) {
+        if (strcasecmp(servername, so->todo_servername) == 0) {
+            SSL_set_SSL_CTX(ssl, so->ctx);
             return SSL_TLSEXT_ERR_NOACK;
         }
     }
@@ -674,6 +667,10 @@ static void sctx_free(struct sslctx* sc) {
 
     if (sc->x509) {
         X509_free(sc->x509);
+    }
+
+    if (sc->todo_servername) {
+        free(sc->todo_servername);
     }
 
     free(sc->filename);
@@ -693,13 +690,7 @@ static int load_cert_ctx(struct sslctx* so) {
 
 #define PUSH_CTX(asn1_str) \
     do { \
-        (void)asn1_str; \
-        struct ctx_list *cl; \
-        cl = calloc(1, sizeof(*cl)); \
-        ASN1_STRING_to_UTF8((unsigned char**)&cl->servername, asn1_str); \
-        cl->ctx = so; \
-        cl->next = sni_ctxs; \
-        sni_ctxs = cl; \
+        ASN1_STRING_to_UTF8((unsigned char**)&so->todo_servername, asn1_str); \
     } while (0)
 
     f = BIO_new(BIO_s_file());
@@ -862,6 +853,13 @@ struct sslctx *make_ctx(const char *pemfile) {
     RSA_free(rsa);
     return sc;
 }
+
+static struct sslctx* find_ctx(const char* file) {
+    struct sslctx *so;
+    HASH_FIND_STR(ssl_ctxs, file, so);
+    return so;
+}
+
 #endif /* OPENSSL_NO_TLSEXT */
 
 /* Init library and load specified certificate.
@@ -909,9 +907,13 @@ static void init_certs() {
     // keep track of the names associated with each cert so we can do SNI on
     // them later
     for (cf = CONFIG->CERT_FILES->NEXT; cf != NULL; cf = cf->NEXT) {
-        so = make_ctx(cf->CERT_FILE);
-        if (so == NULL) {
-            exit(1);
+        if (find_ctx(cf->CERT_FILE) == NULL) {
+            so = make_ctx(cf->CERT_FILE);
+            if (so == NULL) {
+                exit(1);
+            }
+
+            HASH_ADD_KEYPTR(hh, ssl_ctxs, cf->CERT_FILE, strlen(cf->CERT_FILE), so);
         }
     }
 }
