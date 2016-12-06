@@ -1133,7 +1133,7 @@ static void safe_enable_io(proxystate *ps, ev_io *w) {
 
 static void check_exit_state() {
     if (worker_state == WORKER_EXITING && n_conns == 0) {
-        LOG("{core} Worker %d (gen: %d) in state EXITING is not exiting.\n", child_core, worker_generation);
+        LOG("{core} Worker %d (gen: %d) in state EXITING is now exiting.\n", child_core, worker_generation);
         exit(0);
     }
 }
@@ -1763,7 +1763,7 @@ static void handle_mgmt_rd(struct ev_loop *loop, ev_io *w, int revents) {
         check_exit_state();
     }
 
-    LOG("{mgmt} Worker %d (gen: %d)_: State %s\n", child_core, worker_generation,
+    LOG("{mgmt} Worker %d (gen: %d): State %s\n", child_core, worker_generation,
         (worker_state == WORKER_EXITING) ? "EXITING" : "ACTIVE");
 }
 
