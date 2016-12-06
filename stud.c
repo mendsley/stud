@@ -111,12 +111,17 @@ struct worker_proc {
     TAILQ_ENTRY(worker_proc) list;
 };
 
+struct frontend {
+	int sock;
+	ev_io listener;
+	int backend_index;
+};
+
 /* Globals */
 static struct ev_loop *loop;
 static struct addrinfo **backaddrs;
 static pid_t master_pid;
-static ev_io *listeners;
-static int *listener_sockets;
+static struct frontend *frontends;
 static int child_core;
 TAILQ_HEAD(worker_proc_head, worker_proc);
 static struct worker_proc_head worker_procs;
@@ -1428,7 +1433,8 @@ static void ssl_write(struct ev_loop *loop, ev_io *w, int revents) {
 static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     (void) loop;
-    const int index = (w-listeners);
+    struct frontend *fe = (struct frontend*)w->data;
+
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
@@ -1471,7 +1477,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    int back = create_back_socket(backaddrs[index]);
+    int back = create_back_socket(backaddrs[fe->backend_index]);
 
     if (back == -1) {
         close(client);
@@ -1490,7 +1496,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
 
     proxystate *ps = (proxystate *)malloc(sizeof(proxystate));
 
-    ps->index = index;
+    ps->index = fe->backend_index;
     ps->fd_up = client;
     ps->fd_down = back;
     ps->ssl = ssl;
@@ -1563,8 +1569,9 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
         ERR("{core} Process %d detected parent death, closing listener socket.\n", child_core);
         ev_timer_stop(loop, w);
         for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-            ev_io_stop(loop, &listeners[ii]);
-            close(listener_sockets[ii]);
+            struct frontend* fe = &frontends[ii];
+            ev_io_stop(loop, &fe->listener);
+            close(fe->sock);
         }
     }
 }
@@ -1596,8 +1603,9 @@ static void handle_mgmt_rd(struct ev_loop *loop, ev_io *w, int revents) {
 
         /* stop accepting new connections */
         for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-            ev_io_stop(loop, &listeners[ii]);
-            close(listener_sockets[ii]);
+            struct frontend* fe = &frontends[ii];
+            ev_io_stop(loop, &fe->listener);
+            close(fe->sock);
         }
 
         check_exit_state();
@@ -1610,7 +1618,7 @@ static void handle_mgmt_rd(struct ev_loop *loop, ev_io *w, int revents) {
 static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     (void) revents;
     (void) loop;
-    const int index = (w-listeners);
+    struct frontend *fe = (struct frontend*)w->data;
     struct sockaddr_storage addr;
     socklen_t sl = sizeof(addr);
     int client = accept(w->fd, (struct sockaddr *) &addr, &sl);
@@ -1647,7 +1655,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     setnonblocking(client);
     settcpkeepalive(client);
 
-    int back = create_back_socket(backaddrs[index]);
+    int back = create_back_socket(backaddrs[fe->backend_index]);
 
     if (back == -1) {
         close(client);
@@ -1706,7 +1714,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
     ++n_conns;
 
     ev_io_start(loop, &ps->ev_r_clear);
-    start_connect(backaddrs[index], ps); /* start connect */
+    start_connect(backaddrs[fe->backend_index], ps); /* start connect */
 }
 
 /* Set up the child (worker) process including libev event loop, read event
@@ -1738,15 +1746,16 @@ static void handle_connections(int mgmt_fd) {
     ev_timer_init(&timer_ppid_check, check_ppid, 1.0, 1.0);
     ev_timer_start(loop, &timer_ppid_check);
 
-    listeners = malloc(CONFIG->NUM_FRONT*sizeof(ev_io));
-    for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-        ev_io_init(&listeners[ii], (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_sockets[ii], EV_READ);
-        ev_io_start(loop, &listeners[ii]);
-    }
-
     setnonblocking(mgmt_fd);
     ev_io_init(&mgmt_rd, handle_mgmt_rd, mgmt_fd, EV_READ);
     ev_io_start(loop, &mgmt_rd);
+
+    for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
+        struct frontend *fe = &frontends[ii];
+        ev_io_init(&fe->listener, (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, fe->sock, EV_READ);
+        fe->listener.data = fe;
+        ev_io_start(loop, &fe->listener);
+    }
 
     ev_loop(loop, 0);
     ERR("{core} Child %d (gen: %d) exiting.\n", child_core, worker_generation);
@@ -2122,9 +2131,12 @@ int main(int argc, char **argv) {
 
     init_globals();
 
-    listener_sockets = malloc(CONFIG->NUM_FRONT*sizeof(int));
+    // create frontends
+    frontends = malloc(CONFIG->NUM_FRONT*sizeof(struct frontend));
     for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
-        listener_sockets[ii] = create_main_socket(ii);
+        struct frontend* fe = &frontends[ii];
+        fe->sock = create_main_socket(ii);
+        fe->backend_index = ii;
     }
 
 #ifdef USE_SHARED_CACHE
