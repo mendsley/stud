@@ -71,6 +71,11 @@
 #include "configuration.h"
 #include "bufferchain.h"
 
+#define TAILQ_FOREACH_SAFE(var, head, field, tvar)\
+    for ((var) = TAILQ_FIRST(head); \
+        (var) && ((tvar) = TAILQ_NEXT((var), field), 1); \
+        (var) = (tvar))
+
 #ifndef MSG_NOSIGNAL
 # define MSG_NOSIGNAL 0
 #endif
@@ -94,6 +99,8 @@
 #define OPENSSL_NO_TLSEXT
 #endif
 #endif
+
+static volatile unsigned n_sigchld;
 
 struct worker_proc {
     pid_t pid;
@@ -1892,33 +1899,43 @@ void replace_child_with_pid(pid_t pid) {
 }
 
 /* Manage status changes in child processes */
-static void do_wait(int __attribute__ ((unused)) signo) {
+static void do_wait() {
 
+    struct worker_proc *worker, *tworker;
     int status;
-    int pid = wait(&status);
+    int pid;
 
-    if (pid == -1) {
-        if (errno == ECHILD) {
-            ERR("{core} All children have exited! Restarting...\n");
-            start_children(0, CONFIG->NCORES);
-        }
-        else if (errno == EINTR) {
-            ERR("{core} Interrupted wait\n");
-        }
-        else {
-            fail("wait");
-        }
+#define WAIT_PID(p, action) do { \
+    pid = waitpid(p, &status , WNOHANG); \
+    if (pid == 0) { \
+        /* child has not exited */ \
+        break; \
+    } \
+    else if (pid == -1) { \
+        if (errno == EINTR) \
+            ERR("{core} Interrupter waitpid\n"); \
+        else \
+            ERR("waitpid"); \
+    } else { \
+        if (WIFEXITED(status)) { \
+            LOG("{core} Child %d exited with status %d.\n", pid, WEXITSTATUS(status)); \
+            action; \
+        } else if (WIFSIGNALED(status)) { \
+            LOG("{core} Child %d was terminated by signal %d.\n", pid, WTERMSIG(status)); \
+            action; \
+        } \
+    } \
+    } while (0)
+
+    TAILQ_FOREACH_SAFE(worker, &worker_procs, list, tworker) {
+        WAIT_PID(worker->pid, replace_child_with_pid(pid));
     }
-    else {
-        if (WIFEXITED(status)) {
-            ERR("{core} Child %d exited with status %d. Replacing...\n", pid, WEXITSTATUS(status));
-            replace_child_with_pid(pid);
-        }
-        else if (WIFSIGNALED(status)) {
-            ERR("{core} Child %d was terminated by signal %d. Replacing...\n", pid, WTERMSIG(status));
-            replace_child_with_pid(pid);
-        }
-    }
+
+}
+
+static void sigh_child(int signum) {
+    (void)signum;
+    ++n_sigchld;
 }
 
 static void sigh_terminate (int __attribute__ ((unused)) signo) {
@@ -1957,8 +1974,7 @@ void init_signals() {
 
     /* We don't care if someone stops and starts a child process with kill (1) */
     act.sa_flags = SA_NOCLDSTOP;
-
-    act.sa_handler = do_wait;
+    act.sa_handler = sigh_child;
 
     /* We do care when child processes change status */
     if (sigaction(SIGCHLD, &act, NULL) < 0)
@@ -2105,24 +2121,34 @@ int main(int argc, char **argv) {
     master_pid = getpid();
 
     start_children(0, CONFIG->NCORES);
-
 #ifdef USE_SHARED_CACHE
-    if (CONFIG->SHCUPD_PORT) {
-        /* start event loop to receive cache updates */
+        if (CONFIG->SHCUPD_PORT) {
+            /* start event loop to receive cache updates */
 
-        loop = ev_default_loop(EVFLAG_AUTO);
+            loop = ev_default_loop(EVFLAG_AUTO);
 
-        ev_io_init(&shcupd_listener, handle_shcupd, shcupd_socket, EV_READ);
-        ev_io_start(loop, &shcupd_listener);
-
-        ev_loop(loop, 0);
-    }
+            ev_io_init(&shcupd_listener, handle_shcupd, shcupd_socket, EV_READ);
+            ev_io_start(loop, &shcupd_listener);
+        }
 #endif /* USE_SHARED_CACHE */
 
     for (;;) {
-        /* Sleep and let the children work.
-         * Parent will be woken up if a signal arrives */
-        pause();
+#ifdef USE_SHARED_CACHE
+        if (CONFIG->SHCUPD_PORT) {
+            while (0 == n_sigchld) {
+                ev_loop(loop, EV_RUNONCE);
+            }
+        }
+        else
+#endif /* USE_SHARED_CACHE */
+            /* Sleep and let the children work.
+             * Parent will be woken up if a signal arrives */
+            pause();
+
+        while (n_sigchld != 0) {
+            n_sigchld = 0;
+            do_wait();
+        }
     }
 
     exit(0); /* just a formality; we never get here */
