@@ -101,6 +101,7 @@
 #endif
 
 static volatile unsigned n_sigchld;
+static volatile unsigned n_sighup;
 
 struct worker_proc {
     pid_t pid;
@@ -1938,6 +1939,11 @@ static void sigh_child(int signum) {
     ++n_sigchld;
 }
 
+static void sigh_hup(int signum) {
+    (void)signum;
+    ++n_sighup;
+}
+
 static void sigh_terminate (int __attribute__ ((unused)) signo) {
     struct worker_proc* worker;
 
@@ -1989,6 +1995,13 @@ void init_signals() {
     }
     if (sigaction(SIGTERM, &act, NULL) < 0) {
         ERR("Unable to register SIGTERM signal handler: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    act.sa_flags = 0;
+    act.sa_handler = sigh_hup;
+    if (sigaction(SIGHUP, &act, NULL) < 0) {
+        ERR("Unable to register SIGHUP signal hander: %s\n", strerror(errno));
         exit(1);
     }
 }
@@ -2069,6 +2082,32 @@ void openssl_check_version() {
     LOG("{core} Using OpenSSL version %lx.\n", (unsigned long int) openssl_version);
 }
 
+static void reconfigure(int argc, char **argv) {
+    int i;
+    struct worker_proc *worker, *tworker;
+
+    LOG("{core} Received SIGHUP Initializing configuration reload.\n");
+    (void)argc, (void)argv;
+
+    /* start next worker generation */
+    ++worker_generation;
+    start_children(0, CONFIG->NCORES);
+    TAILQ_FOREACH_SAFE(worker, &worker_procs, list, tworker) {
+        if (worker->generation != worker_generation) {
+            errno = 0;
+            do {
+                i = write(worker->pfd, &worker_generation, sizeof(worker_generation));
+                if (i == -1 && errno!= EINTR) {
+                    ERR("WARNING: {core} unabled to gracefully reload worker %d (%s).\n",
+                        worker->pid, strerror(errno));
+                    (void)kill(worker->pid, SIGTERM);
+                    break;
+                }
+            } while (i == -1 && errno == EINTR);
+        }
+    }
+}
+
 /* Process command line args, create the bound socket,
  * spawn child (worker) processes, and respawn if any die */
 int main(int argc, char **argv) {
@@ -2135,7 +2174,7 @@ int main(int argc, char **argv) {
     for (;;) {
 #ifdef USE_SHARED_CACHE
         if (CONFIG->SHCUPD_PORT) {
-            while (0 == n_sigchld) {
+            while (0 == n_sigchld && 0 == n_sighup) {
                 ev_loop(loop, EV_RUNONCE);
             }
         }
@@ -2144,6 +2183,11 @@ int main(int argc, char **argv) {
             /* Sleep and let the children work.
              * Parent will be woken up if a signal arrives */
             pause();
+
+        while (n_sighup != 0) {
+            n_sighup = 0;
+            reconfigure(argc, argv);
+        }
 
         while (n_sigchld != 0) {
             n_sigchld = 0;
