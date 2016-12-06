@@ -2274,7 +2274,11 @@ int main(int argc, char **argv) {
     CONFIG = config_new();
 
     // parse command line
-    config_parse_cli(argc, argv, CONFIG);
+    int rv;
+    if (config_parse_cli(argc, argv, CONFIG, &rv) != 0) {
+        fprintf(stderr, "%s\n", config_error_get());
+        return rv;
+    }
 
     create_workers = 1;
 

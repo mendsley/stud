@@ -598,7 +598,7 @@ int config_param_shcupd_peer (char *str, stud_config *cfg) {
 
 #endif /* USE_SHARED_CACHE */
 
-void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int line) {
+int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int line) {
   int r = 1;
   struct stat st;
 
@@ -790,10 +790,14 @@ void config_param_validate (char *k, char *v, stud_config *cfg, char *file, int 
 
   if (! r) {
     if (file != NULL)
-      config_die("Error in configuration file '%s', line %d: %s\n", file, line, config_error_get());
+      config_error_set("Error in configuration file '%s', line %d: %s\n", file, line, config_error_get());
     else
-      config_die("Invalid parameter '%s': %s", k, config_error_get());
+      config_error_set("Invalid parameter '%s': %s", k, config_error_get());
+
+    return 1;
   }
+
+  return 0;
 }
 
 #ifndef NO_CONFIG_FILE
@@ -810,8 +814,10 @@ int config_file_parse (char *file, stud_config *cfg) {
   } else {
     fd = fopen(file, "r");
   }
-  if (fd == NULL)
-      config_die("Unable to open configuration file '%s': %s\n", file, strerror(errno));
+  if (fd == NULL) {
+      config_error_set("Unable to open configuration file '%s': %s\n", file, strerror(errno));
+      return 1;
+  }
 
   // read config
   int i = 0;
@@ -833,12 +839,14 @@ int config_file_parse (char *file, stud_config *cfg) {
     // printf("File '%s', line %d, key: '%s', value: '%s'\n", file, i, key, val);
 
     // validate configuration key => value
-    config_param_validate(key, val, cfg, file, i);
+    if (0 != config_param_validate(key, val, cfg, file, i)) {
+        return 1;
+    }
   }
 
   fclose(fd);
 
-  return 1;
+  return 0;
 }
 #endif /* NO_CONFIG_FILE */
 
@@ -1222,12 +1230,14 @@ void config_print_usage (char *prog, stud_config *cfg) {
   config_print_usage_fd(prog, cfg, stdout);
 }
 
-void config_parse_cli(int argc, char **argv, stud_config *cfg) {
+int config_parse_cli(int argc, char **argv, stud_config *cfg, int *retval) {
   static int tls = 0, ssl = 0;
   static int client = 0;
   int c, i;
   int test_only = 0;
   char *prog;
+
+  *retval = 0;
 
   struct option long_options[] = {
 #ifndef NO_CONFIG_FILE
@@ -1270,6 +1280,7 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
   };
 
   while (1) {
+    int ret = 0;
     int option_index = 0;
     c = getopt_long(
       argc, argv,
@@ -1285,8 +1296,10 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
         break;
 #ifndef NO_CONFIG_FILE
       case CFG_PARAM_CFGFILE:
-        if (!config_file_parse(optarg, cfg))
-          config_die("%s", config_error_get());
+        if (config_file_parse(optarg, cfg) != 0) {
+          *retval = 1;
+          return 1;
+        }
         break;
       case CFG_PARAM_DEFCFG:
         config_print_default(stdout, cfg);
@@ -1294,60 +1307,60 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
         break;
 #endif
       case CFG_PARAM_SYSLOG_FACILITY:
-        config_param_validate(CFG_SYSLOG_FACILITY, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SYSLOG_FACILITY, optarg, cfg, NULL, 0);
         break;
       case 'c':
-        config_param_validate(CFG_CIPHERS, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_CIPHERS, optarg, cfg, NULL, 0);
         break;
       case 'e':
-        config_param_validate(CFG_SSL_ENGINE, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SSL_ENGINE, optarg, cfg, NULL, 0);
          break;
       case 'O':
-        config_param_validate(CFG_PREFER_SERVER_CIPHERS, CFG_BOOL_ON, cfg, NULL, 0);
+        ret = config_param_validate(CFG_PREFER_SERVER_CIPHERS, CFG_BOOL_ON, cfg, NULL, 0);
         break;
       case 'b':
-        config_param_validate(CFG_BACKEND, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_BACKEND, optarg, cfg, NULL, 0);
         break;
       case 'f':
-        config_param_validate(CFG_FRONTEND, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_FRONTEND, optarg, cfg, NULL, 0);
         break;
       case 'n':
-        config_param_validate(CFG_WORKERS, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_WORKERS, optarg, cfg, NULL, 0);
         break;
       case 'B':
-        config_param_validate(CFG_BACKLOG, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_BACKLOG, optarg, cfg, NULL, 0);
         break;
 #ifdef USE_SHARED_CACHE
       case 'C':
-        config_param_validate(CFG_SHARED_CACHE, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SHARED_CACHE, optarg, cfg, NULL, 0);
         break;
       case 'U':
-        config_param_validate(CFG_SHARED_CACHE_LISTEN, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SHARED_CACHE_LISTEN, optarg, cfg, NULL, 0);
         break;
       case 'P':
-        config_param_validate(CFG_SHARED_CACHE_PEER, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SHARED_CACHE_PEER, optarg, cfg, NULL, 0);
         break;
       case 'M':
-        config_param_validate(CFG_SHARED_CACHE_MCASTIF, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SHARED_CACHE_MCASTIF, optarg, cfg, NULL, 0);
         break;
 #endif
       case 'k':
-        config_param_validate(CFG_KEEPALIVE, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_KEEPALIVE, optarg, cfg, NULL, 0);
         break;
       case 'r':
-        config_param_validate(CFG_CHROOT, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_CHROOT, optarg, cfg, NULL, 0);
         break;
       case 'u':
-        config_param_validate(CFG_USER, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_USER, optarg, cfg, NULL, 0);
         break;
       case 'g':
-        config_param_validate(CFG_GROUP, optarg, cfg, NULL, 0);
+        ret = config_param_validate(CFG_GROUP, optarg, cfg, NULL, 0);
         break;
       case 'q':
-        config_param_validate(CFG_QUIET, CFG_BOOL_ON, cfg, NULL, 0);
+        ret = config_param_validate(CFG_QUIET, CFG_BOOL_ON, cfg, NULL, 0);
         break;
       case 's':
-        config_param_validate(CFG_SYSLOG, CFG_BOOL_ON, cfg, NULL, 0);
+        ret = config_param_validate(CFG_SYSLOG, CFG_BOOL_ON, cfg, NULL, 0);
         break;
       case 't':
         test_only = 1;
@@ -1358,19 +1371,28 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
         break;
       case 'h':
         config_print_usage(argv[0], cfg);
-        exit(0);
-        break;
+        *retval = 0;
+        return 1;
 
       default:
-        config_die("Invalid command line parameters. Run %s --help for instructions.", basename(argv[0]));
+        config_error_set("Invalid command line parameters. Run %s --help for instructions.", basename(argv[0]));
+        *retval = 1;
+        return 1;
+    }
+
+    if (ret != 0) {
+        *retval = 1;
+        return 1;
     }
   }
 
   prog = argv[0];
 
-  if (tls && ssl)
-    config_die("Options --tls and --ssl are mutually exclusive.");
-  else {
+  if (tls && ssl) {
+    config_error_set("Options --tls and --ssl are mutually exclusive.");
+    *retval = 1;
+    return 1;
+  } else {
     if (ssl)
       cfg->ETYPE = ENC_SSL;
     else if (tls)
@@ -1381,17 +1403,29 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
       cfg->PMODE = SSL_CLIENT;
   }
 
-  if (cfg->WRITE_IP_OCTET && cfg->WRITE_PROXY_LINE)
-    config_die("Options --write-ip and --write-proxy are mutually exclusive.");
+  if (cfg->WRITE_IP_OCTET && cfg->WRITE_PROXY_LINE) {
+    config_error_set("Options --write-ip and --write-proxy are mutually exclusive.");
+    *retval = 1;
+    return 1;
+  }
 
-  if (cfg->WRITE_PROXY_LINE && cfg->PROXY_PROXY_LINE)
-    config_die("Options --write-proxy and --proxy-proxy are mutually exclusive.");
+  if (cfg->WRITE_PROXY_LINE && cfg->PROXY_PROXY_LINE) {
+    config_error_set("Options --write-proxy and --proxy-proxy are mutually exclusive.");
+    *retval = 1;
+    return 1;
+  }
 
-  if (cfg->WRITE_IP_OCTET && cfg->PROXY_PROXY_LINE)
-    config_die("Options --write-ip and --proxy-proxy are mutually exclusive.");
+  if (cfg->WRITE_IP_OCTET && cfg->PROXY_PROXY_LINE) {
+    config_error_set("Options --write-ip and --proxy-proxy are mutually exclusive.");
+    *retval = 1;
+    return 1;
+  }
 
-  if (cfg->NUM_FRONT != cfg->NUM_BACK)
-    config_die("Must specify same number of backends as frontends.");
+  if (cfg->NUM_FRONT != cfg->NUM_BACK) {
+    config_error_set("Must specify same number of backends as frontends.");
+    *retval = 1;
+    return 1;
+  }
 
   if (cfg->DAEMONIZE) {
     cfg->SYSLOG = 1;
@@ -1399,18 +1433,26 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
   }
 
 #ifdef USE_SHARED_CACHE
-  if (cfg->SHCUPD_IP != NULL && ! cfg->SHARED_CACHE)
-    config_die("Shared cache update listener is defined, but shared cache is disabled.");
+  if (cfg->SHCUPD_IP != NULL && ! cfg->SHARED_CACHE) {
+    config_error_set("Shared cache update listener is defined, but shared cache is disabled.");
+    *retval = 1;
+    return 1;
+  }
 #endif
 
   // Any arguments left are presumed to be PEM files
   argc -= optind;
   argv += optind;
   for (i = 0; i < argc; i++) {
-    config_param_validate(CFG_PEM_FILE, argv[i], cfg, NULL, 0);
+    if (0 != config_param_validate(CFG_PEM_FILE, argv[i], cfg, NULL, 0)) {
+        *retval = 1;
+        return 1;
+    }
   }
   if (cfg->PMODE == SSL_SERVER && cfg->CERT_FILES == NULL) {
-    config_die("No x509 certificate PEM file specified!");
+    config_error_set("No x509 certificate PEM file specified!");
+    *retval = 1;
+    return 1;
   }
 
   // was this only a test?
@@ -1422,4 +1464,6 @@ void config_parse_cli(int argc, char **argv, stud_config *cfg) {
     printf("%s configuration looks ok.\n", basename(prog));
     exit(0);
   }
+
+  return 0;
 }

@@ -89,4 +89,4 @@ char * config_error_get (void);
 stud_config * config_new (void);
 void config_destroy (stud_config *cfg);
 int config_file_parse (char *file, stud_config *cfg);
-void config_parse_cli(int argc, char **argv, stud_config *cfg);
+int config_parse_cli(int argc, char **argv, stud_config *cfg, int *retval);
