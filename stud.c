@@ -105,11 +105,22 @@
 static volatile unsigned n_sigchld;
 static volatile unsigned n_sighup;
 
+struct sni_name;
+TAILQ_HEAD(sni_name_head, sni_name);
+
 struct sslctx {
     char *filename;
-    char *todo_servername;
     SSL_CTX *ctx;
     X509 *x509;
+    struct sni_name_head sni_list;
+    UT_hash_handle hh;
+};
+
+struct sni_name {
+    char *servername;
+    struct sslctx* sctx;
+    int is_wildcard;
+    TAILQ_ENTRY(sni_name) list;
     UT_hash_handle hh;
 };
 
@@ -180,6 +191,7 @@ typedef enum _SHUTDOWN_REQUESTOR {
 } SHUTDOWN_REQUESTOR;
 
 #ifndef OPENSSL_NO_TLSEXT
+static struct sni_name *sni_names;
 static struct sslctx *ssl_ctxs;
 #endif /* OPENSSL_NO_TLSEXT */
 
@@ -634,6 +646,41 @@ RSA *load_rsa_privatekey(SSL_CTX *ctx, const char *file) {
 
 #ifndef OPENSSL_NO_TLSEXT
 
+static int sni_match(const struct sni_name* sn, const char *srvname) {
+    if (!sn->is_wildcard) {
+        return strcasecmp(srvname, sn->servername) == 0;
+    } else {
+        const char *s = strchr(srvname, '.');
+        if (s == NULL) {
+            return 0;
+        }
+
+        return strcasecmp(s, sn->servername + 1) == 0;
+    }
+}
+
+static struct sslctx *sni_lookup(const char* servername, const struct sni_name *sn_tab) {
+    const struct sni_name *sn;
+
+    HASH_FIND_STR(sn_tab, servername, sn);
+    if (sn == NULL) {
+        char *s;
+        /* attemp another lookup for wildcard matches */
+        s = strchr(servername, '.');
+        if (s != NULL) {
+            HASH_FIND_STR(sn_tab, s, sn);
+        }
+    }
+
+    if (sn != NULL) {
+        if (sni_match(sn, servername)) {
+            return sn->sctx;
+        }
+    }
+
+    return NULL;
+}
+
 /*
  * Switch the context of the current SSL object to the most appropriate one
  * based on the SNI header
@@ -642,25 +689,30 @@ int sni_switch_ctx(SSL *ssl, int *al, void *data) {
     (void)data;
     (void)al;
     const char *servername;
-    const struct sslctx *so, *tso;
+    const struct sslctx *so;
 
     servername = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
     if (!servername) return SSL_TLSEXT_ERR_NOACK;
 
-    // For now, just compare servernames as case insensitive strings. Someday,
-    // it might be nice to Do The Right Thing around star certs.
-    HASH_ITER(hh, ssl_ctxs, so, tso) {
-        if (strcasecmp(servername, so->todo_servername) == 0) {
-            SSL_set_SSL_CTX(ssl, so->ctx);
-            return SSL_TLSEXT_ERR_NOACK;
-        }
-    }
+#define TRY_SNI_MATCH(sn_tab) \
+    do { \
+        so = sni_lookup(servername, (sn_tab)); \
+        if (so != NULL) { \
+            SSL_set_SSL_CTX(ssl, so->ctx); \
+            return SSL_TLSEXT_ERR_OK; \
+        } \
+    } while (0)
 
+    TRY_SNI_MATCH(sni_names);
+
+    /* No matching certs */
     return SSL_TLSEXT_ERR_NOACK;
 }
 #endif /* OPENSSL_NO_TLSEXT */
 
-static void sctx_free(struct sslctx* sc) {
+static void sctx_free(struct sslctx* sc, struct sni_name **sn_tab) {
+    struct sni_name *sn, *tsn;
+
     if (sc == NULL) {
         return;
     }
@@ -669,8 +721,13 @@ static void sctx_free(struct sslctx* sc) {
         X509_free(sc->x509);
     }
 
-    if (sc->todo_servername) {
-        free(sc->todo_servername);
+    TAILQ_FOREACH_SAFE(sn, &sc->sni_list, list, tsn) {
+        TAILQ_REMOVE(&sc->sni_list, sn, list);
+        if (sn_tab != NULL) {
+            HASH_DEL(*sn_tab, sn);
+        }
+        free(sn->servername);
+        free(sn);
     }
 
     free(sc->filename);
@@ -679,6 +736,24 @@ static void sctx_free(struct sslctx* sc) {
 }
 
 #ifndef OPENSSL_NO_TLSEXT
+static void insert_sni_names(struct sslctx *so, struct sni_name **sn_tab) {
+    struct sni_name *sn, *sn2;
+    char* key;
+
+    TAILQ_FOREACH(sn, &so->sni_list, list) {
+        key = sn->servername;
+        if (sn->is_wildcard) {
+            key = sn->servername + 1;
+        }
+
+        HASH_FIND_STR(*sn_tab, key, sn2);
+        if (sn2 != NULL) {
+            ERR("Warning: SNI name '%s' from '%s' overridden by '%s'\n", key, sn2->sctx->filename, so->filename);
+        }
+        HASH_ADD_KEYPTR(hh, *sn_tab, key, strlen(key), sn);
+    }
+}
+
 static int load_cert_ctx(struct sslctx* so) {
     X509 *x509;
     X509_NAME *x509_name;
@@ -690,7 +765,12 @@ static int load_cert_ctx(struct sslctx* so) {
 
 #define PUSH_CTX(asn1_str) \
     do { \
-        ASN1_STRING_to_UTF8((unsigned char**)&so->todo_servername, asn1_str); \
+        struct sni_name *sn; \
+        sn = calloc(1, sizeof(struct sni_name)); \
+        ASN1_STRING_to_UTF8((unsigned char**)&sn->servername, asn1_str); \
+        sn->is_wildcard = (strstr(sn->servername, "*.") == sn->servername); \
+        sn->sctx = so; \
+        TAILQ_INSERT_TAIL(&so->sni_list, sn, list); \
     } while (0)
 
     f = BIO_new(BIO_s_file());
@@ -782,6 +862,7 @@ struct sslctx *make_ctx(const char *pemfile) {
     sc->filename = strdup(pemfile);
     sc->ctx = ctx;
     sc->x509 = NULL;
+    TAILQ_INIT(&sc->sni_list);
 
     if (CONFIG->PMODE == SSL_CLIENT) {
         return sc;
@@ -790,21 +871,21 @@ struct sslctx *make_ctx(const char *pemfile) {
     /* SSL_SERVER Mode stuff */
     if (SSL_CTX_use_certificate_chain_file(ctx, pemfile) <= 0) {
         ERR_print_errors_fp(stderr);
-        sctx_free(sc);
+        sctx_free(sc, NULL);
         return NULL;
     }
 
     rsa = load_rsa_privatekey(ctx, pemfile);
     if (!rsa) {
         ERR("Error loading rsa private key\n");
-        sctx_free(sc);
+        sctx_free(sc, NULL);
         return NULL;
     }
 
     if (SSL_CTX_use_RSAPrivateKey(ctx, rsa) <= 0) {
         ERR_print_errors_fp(stderr);
         RSA_free(rsa);
-        sctx_free(sc);
+        sctx_free(sc, NULL);
         return NULL;
     }
 
@@ -819,7 +900,7 @@ struct sslctx *make_ctx(const char *pemfile) {
 
     if (load_cert_ctx(sc) != 0) {
         RSA_free(rsa);
-        sctx_free(sc);
+        sctx_free(sc, NULL);
         return NULL;
     }
 #endif /* OPENSSL_NO_TLSEXT */
@@ -829,14 +910,14 @@ struct sslctx *make_ctx(const char *pemfile) {
         if (shared_context_init(ctx, CONFIG->SHARED_CACHE) < 0) {
             ERR("Unable to alloc memory for shared cache.\n");
             RSA_free(rsa);
-            sctx_free(sc);
+            sctx_free(sc, NULL);
             return NULL;
         }
         if (CONFIG->SHCUPD_PORT) {
             if (compute_secret(rsa, shared_secret) < 0) {
                 ERR("Unable to compute shared secret.\n");
                 RSA_free(rsa);
-                sctx_free(sc);
+                sctx_free(sc, NULL);
                 return NULL;
             }
 
@@ -902,6 +983,9 @@ static void init_certs() {
     if (!default_ctx) {
         exit(1);
     }
+#ifndef OPENSSL_NO_TLSEXT
+    insert_sni_names(default_ctx, &sni_names);
+#endif /* OPENSSL_NO_TLSEXT */
 
     // Go through the list of PEMs and make some SSL contexts for them. We also
     // keep track of the names associated with each cert so we can do SNI on
@@ -914,6 +998,9 @@ static void init_certs() {
             }
 
             HASH_ADD_KEYPTR(hh, ssl_ctxs, cf->CERT_FILE, strlen(cf->CERT_FILE), so);
+#ifndef OPENSSL_NO_TLSEXT
+            insert_sni_names(so, &sni_names);
+#endif /* OPENSSL_NO_TLSEXT */
         }
     }
 }
