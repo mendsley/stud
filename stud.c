@@ -1479,8 +1479,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
 
-    SSL_CTX * ctx = (SSL_CTX *)w->data;
-    SSL *ssl = SSL_new(ctx);
+    SSL *ssl = SSL_new(default_ctx);
     long mode = SSL_MODE_ENABLE_PARTIAL_WRITE;
 #ifdef SSL_MODE_RELEASE_BUFFERS
     mode |= SSL_MODE_RELEASE_BUFFERS;
@@ -1656,8 +1655,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
         return;
     }
 
-    SSL_CTX * ctx = (SSL_CTX *)w->data;
-    SSL *ssl = SSL_new(ctx);
+    SSL *ssl = SSL_new(default_ctx);
     long mode = SSL_MODE_ENABLE_PARTIAL_WRITE;
 #ifdef SSL_MODE_RELEASE_BUFFERS
     mode |= SSL_MODE_RELEASE_BUFFERS;
@@ -1743,7 +1741,6 @@ static void handle_connections(int mgmt_fd) {
     listeners = malloc(CONFIG->NUM_FRONT*sizeof(ev_io));
     for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
         ev_io_init(&listeners[ii], (CONFIG->PMODE == SSL_CLIENT) ? handle_clear_accept : handle_accept, listener_sockets[ii], EV_READ);
-        listeners[ii].data = default_ctx;
         ev_io_start(loop, &listeners[ii]);
     }
 
