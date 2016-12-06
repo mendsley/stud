@@ -97,6 +97,7 @@
 
 struct worker_proc {
     pid_t pid;
+    int core;
     TAILQ_ENTRY(worker_proc) list;
 };
 
@@ -106,7 +107,7 @@ static struct addrinfo **backaddrs;
 static pid_t master_pid;
 static ev_io *listeners;
 static int *listener_sockets;
-static int child_num;
+static int child_core;
 TAILQ_HEAD(worker_proc_head, worker_proc);
 static struct worker_proc_head worker_procs;
 static SSL_CTX *default_ctx;
@@ -1524,7 +1525,7 @@ static void check_ppid(struct ev_loop *loop, ev_timer *w, int revents) {
     (void) revents;
     pid_t ppid = getppid();
     if (ppid != master_pid) {
-        ERR("{core} Process %d detected parent death, closing listener socket.\n", child_num);
+        ERR("{core} Process %d detected parent death, closing listener socket.\n", child_core);
         ev_timer_stop(loop, w);
         for (int ii = 0; ii < CONFIG->NUM_FRONT; ++ii) {
             ev_io_stop(loop, &listeners[ii]);
@@ -1637,7 +1638,7 @@ static void handle_clear_accept(struct ev_loop *loop, ev_io *w, int revents) {
 /* Set up the child (worker) process including libev event loop, read event
  * on the bound socket, etc */
 static void handle_connections() {
-    LOG("{core} Process %d online\n", child_num);
+    LOG("{core} Process %d online\n", child_core);
 
     /* child cannot create new children... */
     create_workers = 0;
@@ -1646,13 +1647,13 @@ static void handle_connections() {
     cpu_set_t cpus;
 
     CPU_ZERO(&cpus);
-    CPU_SET(child_num, &cpus);
+    CPU_SET(child_core, &cpus);
 
     int res = sched_setaffinity(0, sizeof(cpus), &cpus);
     if (!res)
-        LOG("{core} Successfully attached to CPU #%d\n", child_num);
+        LOG("{core} Successfully attached to CPU #%d\n", child_core);
     else
-        ERR("{core-warning} Unable to attach to CPU #%d; do you have that many cores?\n", child_num);
+        ERR("{core-warning} Unable to attach to CPU #%d; do you have that many cores?\n", child_core);
 #endif
 
     loop = ev_default_loop(EVFLAG_AUTO);
@@ -1669,7 +1670,7 @@ static void handle_connections() {
     }
 
     ev_loop(loop, 0);
-    ERR("{core} Child %d exiting.\n", child_num);
+    ERR("{core} Child %d exiting.\n", child_core);
     exit(1);
 }
 
@@ -1768,9 +1769,10 @@ void start_children(int start_index, int count) {
     /* don't do anything if we're not allowed to create new children */
     if (!create_workers) return;
 
-    for (child_num = start_index; child_num < start_index + count; child_num++) {
+    for (child_core = start_index; child_core < start_index + count; child_core++) {
         worker = calloc(1, sizeof(struct worker_proc));
         worker->pid = fork();
+        worker->core = child_coret ;
         if (worker->pid == -1) {
             ERR("{core} fork() failed: %s; Goodbye cruel world!\n", strerror(errno));
             exit(1);
@@ -1794,7 +1796,7 @@ void replace_child_with_pid(pid_t pid) {
     TAILQ_FOREACH(worker, &worker_procs, list) {
         if (worker->pid == pid) {
             TAILQ_REMOVE(&worker_procs, worker, list);
-            start_children(0, 1);
+            start_children(worker->core, 1);
             free(worker);
             return;
         }
