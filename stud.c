@@ -104,7 +104,8 @@ static volatile unsigned n_sigchld;
 static volatile unsigned n_sighup;
 
 struct sslctx {
-    SSL_CTX* ctx;
+    char *filename;
+    SSL_CTX *ctx;
 };
 
 struct worker_proc {
@@ -667,6 +668,7 @@ static void sctx_free(struct sslctx* sc) {
         return;
     }
 
+    free(sc->filename);
     SSL_CTX_free(sc->ctx);
     free(sc);
 }
@@ -711,6 +713,7 @@ struct sslctx *make_ctx(const char *pemfile) {
     }
 
     sc = malloc(sizeof(struct sslctx));
+    sc->filename = strdup(pemfile);
     sc->ctx = ctx;
 
     if (CONFIG->PMODE == SSL_CLIENT) {
