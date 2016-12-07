@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <dirent.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -801,21 +802,56 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
   }
   else if (strcmp(k, CFG_PEM_FILE) == 0) {
     if (v != NULL && strlen(v) > 0) {
+      struct stat st;
       if (stat(v, &st) != 0) {
-        config_error_set("Unable to stat x509 certificate PEM file '%s': ", v, strerror(errno));
-        r = 0;
-      }
-      else if (! S_ISREG(st.st_mode)) {
-        config_error_set("Invalid x509 certificate PEM file '%s': Not a file.", v);
-        r = 0;
+          config_error_set("Unable to stat x509 certificate PEM file '%s': %s", v, strerror(errno));
+          r = 0;
+      } else if (S_ISREG(st.st_mode)) {
+          struct config_cert_file *cert;
+          cert = config_new_cert_file();
+          config_assign_str(&cert->CERT_FILE, v);
+          if (cfg->CERT_DEFAULT != NULL) {
+              config_cert_add(cert, &cfg->CERT_FILES);
+          } else {
+              cfg->CERT_DEFAULT = cert;
+          }
+      } else if (S_ISDIR(st.st_mode)) {
+          DIR *d;
+          d = opendir(v);
+          if (d == NULL) {
+              config_error_set("Unable to open x509 certificate directory '%s': %s", v, strerror(errno));
+              r = 0;
+          } else {
+              struct dirent *entry;
+              errno = 0;
+              while (NULL != (entry = readdir(d))) {
+                  if (entry->d_type == DT_REG || entry->d_type == DT_LNK) {
+                      struct stat st;
+                      char filename[PATH_MAX];
+                      sprintf(filename, "%s/%s", v, entry->d_name);
+
+                      if (stat(filename, &st) != 0) {
+                          config_error_set("Unable to stat x509 certificate PEM file '%s': %s", filename, strerror(errno));
+                          r = 0;
+                      } else if (S_ISREG(st.st_mode)) {
+                          struct config_cert_file *cert;
+                          cert = config_new_cert_file();
+                          config_assign_str(&cert->CERT_FILE, filename);
+                          config_cert_add(cert, &cfg->CERT_FILES);
+                      }
+                  }
+              }
+
+              if (errno != 0) {
+                  config_error_set("Unable ro read x509 certificate directory '%s': %s", v, strerror(errno));
+                  r = 0;
+              }
+
+              closedir(d);
+          }
       } else {
-        struct config_cert_file *cert = config_new_cert_file();
-        config_assign_str(&cert->CERT_FILE, v);
-        if (cfg->CERT_DEFAULT != NULL) {
-            config_cert_add(cert, &cfg->CERT_FILES);
-        } else {
-            cfg->CERT_DEFAULT = cert;
-        }
+          config_error_set("Invalid x509 certificate PEM file '%s': Not a file or directory.", v);
+          r = 0;
       }
     }
   }
