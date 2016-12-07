@@ -132,6 +132,7 @@ stud_config * config_new (void) {
   r->BACK[0].port       = strdup("8000");
   r->BACK[0].mode       = CONN_INET;
   r->NCORES             = 1;
+  r->CERT_DEFAULT       = NULL;
   r->CERT_FILES         = NULL;
   r->CIPHER_SUITE       = NULL;
   r->ENGINE             = NULL;
@@ -190,6 +191,10 @@ void config_destroy (stud_config *cfg) {
       curr = next;
     }
   }
+  if (cfg->CERT_DEFAULT != NULL){
+      free(cfg->CERT_DEFAULT);
+  }
+
   if (cfg->CIPHER_SUITE != NULL) free(cfg->CIPHER_SUITE);
   if (cfg->ENGINE != NULL) free(cfg->ENGINE);
 
@@ -775,8 +780,12 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
       } else {
         struct cert_files *cert = calloc(1, sizeof(*cert));
         config_assign_str(&cert->CERT_FILE, v);
-        cert->NEXT = cfg->CERT_FILES;
-        cfg->CERT_FILES = cert;
+        if (cfg->CERT_DEFAULT != NULL) {
+            cert->NEXT = cfg->CERT_FILES;
+            cfg->CERT_FILES = cert;
+        } else {
+            cfg->CERT_DEFAULT = cert;
+        }
       }
     }
   }
@@ -1449,7 +1458,7 @@ int config_parse_cli(int argc, char **argv, stud_config *cfg, int *retval) {
         return 1;
     }
   }
-  if (cfg->PMODE == SSL_SERVER && cfg->CERT_FILES == NULL) {
+  if (cfg->PMODE == SSL_SERVER && cfg->CERT_DEFAULT == NULL) {
     config_error_set("No x509 certificate PEM file specified!");
     *retval = 1;
     return 1;

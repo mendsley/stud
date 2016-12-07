@@ -63,6 +63,7 @@ struct __stud_config {
 	struct config_ipport *FRONT;
 	struct config_ipport *BACK;
     long NCORES;
+    struct cert_files *CERT_DEFAULT;
     struct cert_files *CERT_FILES;
     char *CIPHER_SUITE;
     char *ENGINE;

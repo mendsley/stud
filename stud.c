@@ -975,17 +975,15 @@ static void init_certs() {
     struct cert_files *cf;
     struct sslctx* so;
 
-    assert(CONFIG->CERT_FILES != NULL);
-
-    // The first file (i.e., the last file listed in config) is always the
-    // "default" cert
-    default_ctx = make_ctx(CONFIG->CERT_FILES->CERT_FILE);
-    if (!default_ctx) {
-        exit(1);
-    }
-#ifndef OPENSSL_NO_TLSEXT
-    insert_sni_names(default_ctx, &sni_names);
+    if (CONFIG->CERT_DEFAULT != NULL) {
+        default_ctx = make_ctx(CONFIG->CERT_DEFAULT->CERT_FILE);
+        if (default_ctx == NULL) {
+            exit(1);
+        }
+#ifndef OPENSSL_NOTLSEXT
+        insert_sni_names(default_ctx, &sni_names);
 #endif /* OPENSSL_NO_TLSEXT */
+    }
 
     // Go through the list of PEMs and make some SSL contexts for them. We also
     // keep track of the names associated with each cert so we can do SNI on
