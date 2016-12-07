@@ -160,6 +160,20 @@ stud_config * config_new (void) {
   return r;
 }
 
+static struct config_cert_file *config_new_cert_file() {
+    struct config_cert_file *cf;
+
+    cf = calloc(1, sizeof(*cf));
+    return cf;
+}
+
+static void config_destroy_cert_file(struct config_cert_file **pcf) {
+    struct config_cert_file *cf = *pcf;
+    free(cf->CERT_FILE);
+    free(cf);
+    *pcf = NULL;
+}
+
 static void config_destroy_ipport(struct config_ipport* ip) {
 	if (ip->host) free(ip->host);
 	if (ip->port) free(ip->port);
@@ -187,12 +201,12 @@ void config_destroy (stud_config *cfg) {
     struct config_cert_file *curr = cfg->CERT_FILES, *next;
     while (cfg->CERT_FILES != NULL) {
       next = curr->NEXT;
-      free(curr);
+      config_destroy_cert_file(&curr);
       curr = next;
     }
   }
   if (cfg->CERT_DEFAULT != NULL){
-      free(cfg->CERT_DEFAULT);
+      config_destroy_cert_file(&cfg->CERT_DEFAULT);
   }
 
   if (cfg->CIPHER_SUITE != NULL) free(cfg->CIPHER_SUITE);
@@ -209,7 +223,7 @@ void config_destroy (stud_config *cfg) {
       free(cfg->SHCUPD_PEERS[i].port);
   }
 
-  if (cfg->SHCUPD_MCASTIF != NULL) free(cfg->SHCUPD_MCASTIF);
+  if (cfg->SHCUPD_MCACERT_FILE != NULL) free(cfg->SHCUPD_MCASTIF);
   if (cfg->SHCUPD_MCASTTTL != NULL) free(cfg->SHCUPD_MCASTTTL);
 #endif
 
@@ -603,6 +617,11 @@ int config_param_shcupd_peer (char *str, stud_config *cfg) {
 
 #endif /* USE_SHARED_CACHE */
 
+static void config_cert_add(struct config_cert_file *cf, struct config_cert_file **list) {
+    cf->NEXT = *list;
+    *list = cf;
+}
+
 int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int line) {
   int r = 1;
   struct stat st;
@@ -778,11 +797,10 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
         config_error_set("Invalid x509 certificate PEM file '%s': Not a file.", v);
         r = 0;
       } else {
-        struct config_cert_file *cert = calloc(1, sizeof(*cert));
+        struct config_cert_file *cert = config_new_cert_file();
         config_assign_str(&cert->CERT_FILE, v);
         if (cfg->CERT_DEFAULT != NULL) {
-            cert->NEXT = cfg->CERT_FILES;
-            cfg->CERT_FILES = cert;
+            config_cert_add(cert, &cfg->CERT_FILES);
         } else {
             cfg->CERT_DEFAULT = cert;
         }
