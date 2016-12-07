@@ -824,7 +824,7 @@ static int load_cert_ctx(struct sslctx* so) {
  * Initialize an SSL context
  */
 
-struct sslctx *make_ctx(const char *pemfile) {
+struct sslctx *make_ctx(const struct cert_files *cert) {
     SSL_CTX *ctx;
     struct sslctx* sc;
     RSA *rsa;
@@ -859,7 +859,7 @@ struct sslctx *make_ctx(const char *pemfile) {
     }
 
     sc = calloc(1, sizeof(struct sslctx));
-    sc->filename = strdup(pemfile);
+    sc->filename = strdup(cert->CERT_FILE);
     sc->ctx = ctx;
     sc->x509 = NULL;
     TAILQ_INIT(&sc->sni_list);
@@ -869,13 +869,13 @@ struct sslctx *make_ctx(const char *pemfile) {
     }
 
     /* SSL_SERVER Mode stuff */
-    if (SSL_CTX_use_certificate_chain_file(ctx, pemfile) <= 0) {
+    if (SSL_CTX_use_certificate_chain_file(ctx, cert->CERT_FILE) <= 0) {
         ERR_print_errors_fp(stderr);
         sctx_free(sc, NULL);
         return NULL;
     }
 
-    rsa = load_rsa_privatekey(ctx, pemfile);
+    rsa = load_rsa_privatekey(ctx, cert->CERT_FILE);
     if (!rsa) {
         ERR("Error loading rsa private key\n");
         sctx_free(sc, NULL);
@@ -890,7 +890,7 @@ struct sslctx *make_ctx(const char *pemfile) {
     }
 
 #ifndef OPENSSL_NO_DH
-    init_dh(ctx, pemfile);
+    init_dh(ctx, cert->CERT_FILE);
 #endif /* OPENSSL_NO_DH */
 
 #ifndef OPENSSL_NO_TLSEXT
@@ -976,7 +976,7 @@ static void init_certs() {
     struct sslctx* so;
 
     if (CONFIG->CERT_DEFAULT != NULL) {
-        default_ctx = make_ctx(CONFIG->CERT_DEFAULT->CERT_FILE);
+        default_ctx = make_ctx(CONFIG->CERT_DEFAULT);
         if (default_ctx == NULL) {
             exit(1);
         }
@@ -990,7 +990,7 @@ static void init_certs() {
     // them later
     for (cf = CONFIG->CERT_FILES->NEXT; cf != NULL; cf = cf->NEXT) {
         if (find_ctx(cf->CERT_FILE) == NULL) {
-            so = make_ctx(cf->CERT_FILE);
+            so = make_ctx(cf);
             if (so == NULL) {
                 exit(1);
             }
