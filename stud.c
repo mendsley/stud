@@ -824,7 +824,7 @@ static int load_cert_ctx(struct sslctx* so) {
  * Initialize an SSL context
  */
 
-struct sslctx *make_ctx(const struct cert_files *cert) {
+struct sslctx *make_ctx(const struct config_cert_file *cert) {
     SSL_CTX *ctx;
     struct sslctx* sc;
     RSA *rsa;
@@ -972,7 +972,7 @@ void init_openssl() {
 }
 
 static void init_certs() {
-    struct cert_files *cf;
+    struct config_cert_file *cf;
     struct sslctx* so;
 
     if (CONFIG->CERT_DEFAULT != NULL) {

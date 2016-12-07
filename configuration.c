@@ -184,7 +184,7 @@ void config_destroy (stud_config *cfg) {
   config_destroy_ipports(cfg->NUM_FRONT, cfg->FRONT);
   config_destroy_ipports(cfg->NUM_BACK, cfg->BACK);
   if (cfg->CERT_FILES != NULL) {
-    struct cert_files *curr = cfg->CERT_FILES, *next;
+    struct config_cert_file *curr = cfg->CERT_FILES, *next;
     while (cfg->CERT_FILES != NULL) {
       next = curr->NEXT;
       free(curr);
@@ -778,7 +778,7 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
         config_error_set("Invalid x509 certificate PEM file '%s': Not a file.", v);
         r = 0;
       } else {
-        struct cert_files *cert = calloc(1, sizeof(*cert));
+        struct config_cert_file *cert = calloc(1, sizeof(*cert));
         config_assign_str(&cert->CERT_FILE, v);
         if (cfg->CERT_DEFAULT != NULL) {
             cert->NEXT = cfg->CERT_FILES;

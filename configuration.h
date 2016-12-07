@@ -36,9 +36,9 @@ typedef enum {
     CONN_PIPE
 } CONNECTION_MODE;
 
-struct cert_files {
+struct config_cert_file {
     char *CERT_FILE;
-    struct cert_files *NEXT;
+    struct config_cert_file *NEXT;
 };
 
 struct config_ipport {
@@ -63,8 +63,8 @@ struct __stud_config {
 	struct config_ipport *FRONT;
 	struct config_ipport *BACK;
     long NCORES;
-    struct cert_files *CERT_DEFAULT;
-    struct cert_files *CERT_FILES;
+    struct config_cert_file *CERT_DEFAULT;
+    struct config_cert_file *CERT_FILES;
     char *CIPHER_SUITE;
     char *ENGINE;
     int BACKLOG;
