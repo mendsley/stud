@@ -190,6 +190,8 @@ static void config_destroy_ipports(int num, struct config_ipport* ips) {
 }
 
 void config_destroy (stud_config *cfg) {
+  struct config_cert_file *cf, *tcf;
+
   // printf("config_destroy() in pid %d: %p\n", getpid(), cfg);
   if (cfg == NULL) return;
 
@@ -197,13 +199,9 @@ void config_destroy (stud_config *cfg) {
   if (cfg->CHROOT != NULL) free(cfg->CHROOT);
   config_destroy_ipports(cfg->NUM_FRONT, cfg->FRONT);
   config_destroy_ipports(cfg->NUM_BACK, cfg->BACK);
-  if (cfg->CERT_FILES != NULL) {
-    struct config_cert_file *curr = cfg->CERT_FILES, *next;
-    while (cfg->CERT_FILES != NULL) {
-      next = curr->NEXT;
-      config_destroy_cert_file(&curr);
-      curr = next;
-    }
+  HASH_ITER(hh, cfg->CERT_FILES, cf, tcf) {
+      HASH_DEL(cfg->CERT_FILES, cf);
+      config_destroy_cert_file(&cf);
   }
   if (cfg->CERT_DEFAULT != NULL){
       config_destroy_cert_file(&cfg->CERT_DEFAULT);
@@ -617,9 +615,8 @@ int config_param_shcupd_peer (char *str, stud_config *cfg) {
 
 #endif /* USE_SHARED_CACHE */
 
-static void config_cert_add(struct config_cert_file *cf, struct config_cert_file **list) {
-    cf->NEXT = *list;
-    *list = cf;
+static void config_cert_add(struct config_cert_file *cf, struct config_cert_file **h) {
+    HASH_ADD_KEYPTR(hh, *h, cf->CERT_FILE, strlen(cf->CERT_FILE), cf);
 }
 
 int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int line) {

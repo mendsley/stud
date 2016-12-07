@@ -972,7 +972,7 @@ void init_openssl() {
 }
 
 static void init_certs() {
-    struct config_cert_file *cf;
+    struct config_cert_file *cf, *tcf;
     struct sslctx* so;
 
     if (CONFIG->CERT_DEFAULT != NULL) {
@@ -988,7 +988,7 @@ static void init_certs() {
     // Go through the list of PEMs and make some SSL contexts for them. We also
     // keep track of the names associated with each cert so we can do SNI on
     // them later
-    for (cf = CONFIG->CERT_FILES->NEXT; cf != NULL; cf = cf->NEXT) {
+    HASH_ITER(hh, CONFIG->CERT_FILES, cf, tcf) {
         if (find_ctx(cf->CERT_FILE) == NULL) {
             so = make_ctx(cf);
             if (so == NULL) {

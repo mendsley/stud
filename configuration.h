@@ -7,6 +7,8 @@
 
 #include <sys/types.h>
 
+#include "foreign/uthash.h"
+
 #ifdef USE_SHARED_CACHE
   #include "shctx.h"
 
@@ -38,7 +40,8 @@ typedef enum {
 
 struct config_cert_file {
     char *CERT_FILE;
-    struct config_cert_file *NEXT;
+
+    UT_hash_handle hh;
 };
 
 struct config_ipport {
