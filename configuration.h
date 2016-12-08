@@ -40,6 +40,7 @@ typedef enum {
 
 struct config_cert_file {
     char *CERT_FILE;
+    double mtim;
     int mark;
 
     UT_hash_handle hh;

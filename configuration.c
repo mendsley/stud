@@ -631,7 +631,18 @@ int config_param_shcupd_peer (char *str, stud_config *cfg) {
 
 #endif /* USE_SHARED_CACHE */
 
-static void config_cert_add(struct config_cert_file *cf, struct config_cert_file **h) {
+static double mtim2double(const struct stat *sb) {
+    double d = sb->st_mtime;
+#if defined(HAVE_STRUCT_STAT_ST_MTIM)
+	d += sb->st_mtim.tv_nsec * 1e-9;
+#elif defined(HAVE_STRUCT_STAT_ST_MTIMESPEC)
+	d += sb->st_mtimespec.tv_nsec * 1e-9;
+#endif
+	return d;
+}
+
+static void config_cert_add(struct config_cert_file *cf, const struct stat *st, struct config_cert_file **h) {
+    cf->mtim = mtim2double(st);
     HASH_ADD_KEYPTR(hh, *h, cf->CERT_FILE, strlen(cf->CERT_FILE), cf);
 }
 
@@ -811,8 +822,9 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
           cert = config_new_cert_file();
           config_assign_str(&cert->CERT_FILE, v);
           if (cfg->CERT_DEFAULT != NULL) {
-              config_cert_add(cert, &cfg->CERT_FILES);
+              config_cert_add(cert, &st, &cfg->CERT_FILES);
           } else {
+              cert->mtim = mtim2double(&st);
               cfg->CERT_DEFAULT = cert;
           }
       } else if (S_ISDIR(st.st_mode)) {
@@ -837,7 +849,7 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
                           struct config_cert_file *cert;
                           cert = config_new_cert_file();
                           config_assign_str(&cert->CERT_FILE, filename);
-                          config_cert_add(cert, &cfg->CERT_FILES);
+                          config_cert_add(cert, &st, &cfg->CERT_FILES);
                       }
                   }
               }

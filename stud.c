@@ -113,6 +113,7 @@ struct sslctx {
     SSL_CTX *ctx;
     X509 *x509;
     struct sni_name_head sni_list;
+    double mtim;
     UT_hash_handle hh;
 };
 
@@ -889,6 +890,7 @@ struct sslctx *make_ctx(const struct config_cert_file *cert) {
     sc->filename = strdup(cert->CERT_FILE);
     sc->ctx = ctx;
     sc->x509 = NULL;
+    sc->mtim = cert->mtim;
     TAILQ_INIT(&sc->sni_list);
 
     if (CONFIG->PMODE == SSL_CLIENT) {
@@ -2422,7 +2424,7 @@ static int cert_query(stud_config *cfg, struct txn_obj_head *txn_objs) {
     // drop certs no longer in the config
     HASH_ITER(hh, ssl_ctxs, sc, tsc) {
         HASH_FIND_STR(cfg->CERT_FILES, sc->filename, cf);
-        if (cf != NULL) {
+        if (cf != NULL && cf->mtim <= sc->mtim) {
             cf->mark = 1;
         } else {
             o = make_txn_obj(TXN_CERT, TXN_DROP, sc, NULL, cert_rollback, cert_commit);
@@ -2433,7 +2435,7 @@ static int cert_query(stud_config *cfg, struct txn_obj_head *txn_objs) {
     // handle default cert
     if (cfg->CERT_DEFAULT != NULL) {
         cf = cfg->CERT_DEFAULT;
-        if (strcmp(default_ctx->filename, cf->CERT_FILE) != 0) {
+        if (strcmp(default_ctx->filename, cf->CERT_FILE) != 0 || cf->mtim > default_ctx->mtim) {
             sc = make_ctx(cf);
             if (sc == NULL) {
                 return -1;
