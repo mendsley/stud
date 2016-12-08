@@ -654,9 +654,9 @@ static int create_shcupd_socket() {
 
 #endif /*USE_SHARED_CACHE */
 
-RSA *load_rsa_privatekey(SSL_CTX *ctx, const char *file) {
+EVP_PKEY *load_privatekey(SSL_CTX *ctx, const char *file) {
     BIO *bio;
-    RSA *rsa;
+    EVP_PKEY *pkey;
 
     bio = BIO_new_file(file, "r");
     if (!bio) {
@@ -664,11 +664,11 @@ RSA *load_rsa_privatekey(SSL_CTX *ctx, const char *file) {
         return NULL;
     }
 
-    rsa = PEM_read_bio_RSAPrivateKey(bio, NULL,
+    pkey = PEM_read_bio_PrivateKey(bio, NULL,
           ctx->default_passwd_callback, ctx->default_passwd_callback_userdata);
     BIO_free(bio);
 
-    return rsa;
+    return pkey;
 }
 
 #ifndef OPENSSL_NO_TLSEXT
@@ -854,7 +854,7 @@ static int load_cert_ctx(struct sslctx* so) {
 struct sslctx *make_ctx(const struct config_cert_file *cert) {
     SSL_CTX *ctx;
     struct sslctx* sc;
-    RSA *rsa;
+    EVP_PKEY *pkey;
 
     long ssloptions = SSL_OP_NO_SSLv2 | SSL_OP_ALL |
             SSL_OP_NO_SESSION_RESUMPTION_ON_RENEGOTIATION;
@@ -902,16 +902,16 @@ struct sslctx *make_ctx(const struct config_cert_file *cert) {
         return NULL;
     }
 
-    rsa = load_rsa_privatekey(ctx, cert->CERT_FILE);
-    if (!rsa) {
-        ERR("Error loading rsa private key\n");
+    pkey = load_privatekey(ctx, cert->CERT_FILE);
+    if (!pkey) {
+        ERR("Error loading private key '%s'\n", cert->CERT_FILE);
         sctx_free(sc, NULL);
         return NULL;
     }
 
-    if (SSL_CTX_use_RSAPrivateKey(ctx, rsa) <= 0) {
+    if (SSL_CTX_use_PrivateKey(ctx, pkey) <= 0) {
         ERR_print_errors_fp(stderr);
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         sctx_free(sc, NULL);
         return NULL;
     }
@@ -926,7 +926,7 @@ struct sslctx *make_ctx(const struct config_cert_file *cert) {
     }
 
     if (load_cert_ctx(sc) != 0) {
-        RSA_free(rsa);
+        EVP_PKEY_free(pkey);
         sctx_free(sc, NULL);
         return NULL;
     }
@@ -936,14 +936,14 @@ struct sslctx *make_ctx(const struct config_cert_file *cert) {
     if (CONFIG->SHARED_CACHE) {
         if (shared_context_init(ctx, CONFIG->SHARED_CACHE) < 0) {
             ERR("Unable to alloc memory for shared cache.\n");
-            RSA_free(rsa);
+            EVP_PKEY_free(pkey);
             sctx_free(sc, NULL);
             return NULL;
         }
         if (CONFIG->SHCUPD_PORT) {
             if (compute_secret(rsa, shared_secret) < 0) {
                 ERR("Unable to compute shared secret.\n");
-                RSA_free(rsa);
+                EVP_PKEY_free(pkey);
                 sctx_free(sc, NULL);
                 return NULL;
             }
@@ -958,7 +958,7 @@ struct sslctx *make_ctx(const struct config_cert_file *cert) {
     }
 #endif
 
-    RSA_free(rsa);
+    EVP_PKEY_free(pkey);
     return sc;
 }
 
@@ -1374,7 +1374,7 @@ static void end_handshake(int index, proxystate *ps) {
             assert(ps->remote_ip.ss_family == AF_INET ||
                    ps->remote_ip.ss_family == AF_INET6);
 
-            
+
             bufferchain_write(&ps->bc_ssl2clear, &header_proxy_v2, sizeof(header_proxy_v2));
             bufferchain_write(&ps->bc_ssl2clear, &ps->proxy_addr, header_proxy_v2.len);
         }
@@ -1728,7 +1728,7 @@ static void handle_accept(struct ev_loop *loop, ev_io *w, int revents) {
         memcpy(&ps->proxy_addr.ipv6_addr.src_addr, &saddr->sin6_addr, sizeof(struct in6_addr));
         ps->proxy_addr.ipv6_addr.src_port = saddr->sin6_port;
     }
-    
+
 
     /* Link back proxystate to SSL state */
     SSL_set_app_data(ssl, ps);
@@ -1982,18 +1982,18 @@ void init_globals() {
             }
 
             memset(backaddr, 0, sizeof(struct addrinfo));
-            
+
             backaddr->ai_socktype = SOCK_STREAM;
             backaddr->ai_addrlen = sizeof(struct sockaddr_un);
             backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
             struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
             backaddr->ai_family = addr->sun_family = AF_UNIX;
-            
+
             strncpy(addr->sun_path, CONFIG->BACK[ii].host, sizeof(addr->sun_path));
             backaddrs[ii] = backaddr;
-        } 
+        }
         else {
-            
+
             const int gai_err = getaddrinfo(CONFIG->BACK[ii].host, CONFIG->BACK[ii].port,
                                             &hints, &backaddrs[ii]);
             if (gai_err != 0) {
