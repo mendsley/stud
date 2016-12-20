@@ -837,20 +837,18 @@ int config_param_validate (char *k, char *v, stud_config *cfg, char *file, int l
               struct dirent *entry;
               errno = 0;
               while (NULL != (entry = readdir(d))) {
-                  if (entry->d_type == DT_REG || entry->d_type == DT_LNK) {
-                      struct stat st;
-                      char filename[PATH_MAX];
-                      sprintf(filename, "%s/%s", v, entry->d_name);
+                  struct stat st;
+                  char filename[PATH_MAX];
+                  sprintf(filename, "%s/%s", v, entry->d_name);
 
-                      if (stat(filename, &st) != 0) {
-                          config_error_set("Unable to stat x509 certificate PEM file '%s': %s", filename, strerror(errno));
-                          r = 0;
-                      } else if (S_ISREG(st.st_mode)) {
-                          struct config_cert_file *cert;
-                          cert = config_new_cert_file();
-                          config_assign_str(&cert->CERT_FILE, filename);
-                          config_cert_add(cert, &st, &cfg->CERT_FILES);
-                      }
+                  if (stat(filename, &st) != 0) {
+                      config_error_set("Unable to stat x509 certificate PEM file '%s': %s", filename, strerror(errno));
+                      r = 0;
+                  } else if (S_ISREG(st.st_mode)) {
+                      struct config_cert_file *cert;
+                      cert = config_new_cert_file();
+                      config_assign_str(&cert->CERT_FILE, filename);
+                      config_cert_add(cert, &st, &cfg->CERT_FILES);
                   }
               }
 
