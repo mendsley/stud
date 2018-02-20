@@ -30,6 +30,25 @@ a special build of `stud` can be made that utilitizes shared memory to
 use a common session cache between all child processes.  This can speed up
 large `stud` deployments by avoiding client renegotiation.
 
+Docker
+------
+An Alpine Linux build of this repository is provided on dockerhub that provides
+sane defaults that terminate TLS traffic to a local unix socket:
+
+```bash
+$ docker pull mendsley/stud
+$ docker run \
+        --name stud \
+        -d \
+        -p 443:443 \
+        -v $PWD/certs:/cert \
+        -v $PWD/sock:/sock \
+        mendsley/stud
+```
+
+This will start a stud daemon listening on port 443 with the certificates in
+./cert and piping connections by dialing the unix socket at ./sock/stud
+
 Releases
 ---------
 
