@@ -1549,7 +1549,7 @@ static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
         if (errno == 0)
             ERR("{%s} [%s] Connection closed (in data)\n", backend ? "backend" : "client", remote_addr_str);
         else
-            ERR("{%s} [%s] %s [errno]\n", backend ? "backend" : "cliet", remote_addr_str, strerror(errno));
+            ERR("{%s} [%s] %s [errno]\n", backend ? "backend" : "client", remote_addr_str, strerror(errno));
     else
         ERR("{%s} [%s] Unexpected SSL_read error: %d\n", backend ? "backend" : "client", remote_addr_str, err);
     shutdown_proxy(ps, SHUTDOWN_SSL);
