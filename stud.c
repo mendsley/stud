@@ -1521,15 +1521,37 @@ static void client_handshake(struct ev_loop *loop, ev_io *w, int revents) {
 
 /* Handle a socket error condition passed to us from OpenSSL */
 static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
+    char remote_addr_str[INET6_ADDRSTRLEN+1+5+1];
+    int port;
+
+    switch (ps->remote_ip.ss_family) {
+    case AF_INET:
+        inet_ntop(AF_INET, &((const struct sockaddr_in*)&ps->remote_ip)->sin_addr, remote_addr_str, sizeof(remote_addr_str));
+        port  = htons(ps->proxy_addr.ipv4_addr.src_port);
+        break;
+
+    case AF_INET6:
+        inet_ntop(AF_INET6, &((const struct sockaddr_in6*)&ps->remote_ip)->sin6_addr, remote_addr_str, sizeof(remote_addr_str));
+        port = htons(ps->proxy_addr.ipv6_addr.src_port);
+        break;
+
+    default:
+        strcpy(remote_addr_str, "unknown");
+        port = 0;
+        break;
+    }
+
+    sprintf(remote_addr_str + strlen(remote_addr_str), ":%d", port);
+
     if (err == SSL_ERROR_ZERO_RETURN)
-        ERR("{%s} Connection closed (in data)\n", backend ? "backend" : "client");
+        ERR("{%s} [%s] Connection closed (in data)\n", backend ? "backend" : "client", remote_addr_str);
     else if (err == SSL_ERROR_SYSCALL)
         if (errno == 0)
-            ERR("{%s} Connection closed (in data)\n", backend ? "backend" : "client");
+            ERR("{%s} [%s] Connection closed (in data)\n", backend ? "backend" : "client", remote_addr_str);
         else
-            perror(backend ? "{backend} [errno] " : "{client} [errno] ");
+            ERR("{%s} [%s] %s [errno]\n", backend ? "backend" : "cliet", remote_addr_str, strerror(errno));
     else
-        ERR("{%s} Unexpected SSL_read error: %d\n", backend ? "backend" : "client" , err);
+        ERR("{%s} [%s] Unexpected SSL_read error: %d\n", backend ? "backend" : "client", remote_addr_str, err);
     shutdown_proxy(ps, SHUTDOWN_SSL);
 }
 
