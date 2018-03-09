@@ -1521,8 +1521,11 @@ static void client_handshake(struct ev_loop *loop, ev_io *w, int revents) {
 
 /* Handle a socket error condition passed to us from OpenSSL */
 static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
+    BIO* bio;
     char remote_addr_str[INET6_ADDRSTRLEN+1+5+1];
     int port;
+    char *bioErr;
+    int bioErrLen;
 
     switch (ps->remote_ip.ss_family) {
     case AF_INET:
@@ -1543,15 +1546,23 @@ static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
 
     sprintf(remote_addr_str + strlen(remote_addr_str), ":%d", port);
 
+    bio = BIO_new(BIO_s_mem());
+    ERR_print_errors(bio);
+
+    bioErr = "unknown";
+    bioErrLen = (int)BIO_get_mem_data(bio, &bioErr);
+
     if (err == SSL_ERROR_ZERO_RETURN)
         LOG("{%s} [%s] Connection closed (in data)\n", backend ? "backend" : "client", remote_addr_str);
     else if (err == SSL_ERROR_SYSCALL)
         if (errno == 0)
-            ERR("{%s} [%s] Connection closed (in data)\n", backend ? "backend" : "client", remote_addr_str);
+            ERR("{%s} [%s] Connection closed (in data): %.*s\n", backend ? "backend" : "client", remote_addr_str, bioErrLen, bioErr);
         else
-            ERR("{%s} [%s] %s [errno]\n", backend ? "backend" : "client", remote_addr_str, strerror(errno));
+            ERR("{%s} [%s] %s [errno] %.*s\n", backend ? "backend" : "client", remote_addr_str, strerror(errno), bioErrLen, bioErr);
     else
-        ERR("{%s} [%s] Unexpected SSL_read error: %d\n", backend ? "backend" : "client", remote_addr_str, err);
+        ERR("{%s} [%s] Unexpected SSL_read error: %d: %.*s\n", backend ? "backend" : "client", remote_addr_str, err, bioErrLen, bioErr);
+
+    BIO_free(bio);
     shutdown_proxy(ps, SHUTDOWN_SSL);
 }
 
