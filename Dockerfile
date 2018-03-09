@@ -1,5 +1,4 @@
-# Stage 0 - build
-FROM alpine:3.7
+FROM alpine:3.7 AS builder
 
 RUN apk add --update \
 		bsd-compat-headers \
@@ -13,7 +12,6 @@ RUN apk add --update \
 ADD . /usr/src/stud/
 RUN make -C /usr/src/stud/
 
-# STAGE 1 - final image
 FROM alpine:3.7
 LABEL maintainer="Matthew Endsley <mendsley@gmail.com>"
 
@@ -24,7 +22,7 @@ RUN apk add --update \
 	&& mkdir -p /cert /sock \
 	;
 
-COPY --from=0 /usr/src/stud/stud /usr/bin/stud
+COPY --from=builder /usr/src/stud/stud /usr/bin/stud
 
 EXPOSE 443
 
