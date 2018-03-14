@@ -1556,7 +1556,7 @@ static void handle_fatal_ssl_error(proxystate *ps, int err, int backend) {
         LOG("{%s} [%s] Connection closed (in data)\n", backend ? "backend" : "client", remote_addr_str);
     else if (err == SSL_ERROR_SYSCALL)
         if (errno == 0)
-            ERR("{%s} [%s] Connection closed (in data): %.*s\n", backend ? "backend" : "client", remote_addr_str, bioErrLen, bioErr);
+            LOG("{%s} [%s] Connection closed (in data): %.*s\n", backend ? "backend" : "client", remote_addr_str, bioErrLen, bioErr);
         else
             ERR("{%s} [%s] %s [errno] %.*s\n", backend ? "backend" : "client", remote_addr_str, strerror(errno), bioErrLen, bioErr);
     else
