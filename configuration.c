@@ -385,9 +385,7 @@ int config_param_host_port_wildcard (char *str, int* num, struct config_ipport**
 
     // check for pipe://
     if (len > 8 && strncasecmp(str, "pipe://", 7) == 0) {
-      if (str[7] != '@') {
-		strncpy(addr_buf, str+7, n-str-7);
-	  }
+	  strncpy(addr_buf, str+7, n-str-7);
       mode_buf = CONN_PIPE;
     }
     // NEW FORMAT: [address]:port

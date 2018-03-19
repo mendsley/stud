@@ -2021,12 +2021,18 @@ void init_globals() {
             memset(backaddr, 0, sizeof(struct addrinfo));
 
             backaddr->ai_socktype = SOCK_STREAM;
-            backaddr->ai_addrlen = sizeof(struct sockaddr_un);
+            backaddr->ai_addrlen = sizeof(sa_family_t) + strlen(CONFIG->BACK[ii].host) + 1;
             backaddr->ai_addr = (struct sockaddr*)malloc(backaddr->ai_addrlen);
             struct sockaddr_un* addr = (struct sockaddr_un*)backaddr->ai_addr;
             backaddr->ai_family = addr->sun_family = AF_UNIX;
 
-            strncpy(addr->sun_path, CONFIG->BACK[ii].host, sizeof(addr->sun_path));
+            memcpy(addr->sun_path, CONFIG->BACK[ii].host, backaddr->ai_addrlen - sizeof(sa_family_t));
+
+            if (addr->sun_path[0] == '@') {
+                addr->sun_path[0] = '\0';
+                --backaddr->ai_addrlen;
+            }
+
             backaddrs[ii] = backaddr;
         }
         else {
