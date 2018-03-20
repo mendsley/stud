@@ -23,8 +23,9 @@ RUN apk add --update \
 	;
 
 COPY --from=builder /usr/src/stud/stud /usr/bin/stud
+COPY --from=builder /usr/src/stud/example.com.pem /etc/keycert.pem
 
 EXPOSE 443
 
 ENTRYPOINT ["/usr/bin/stud"]
-CMD ["/cert/stud.pem"]
+CMD ["/etc/keycert.pem"]

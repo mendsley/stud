@@ -39,10 +39,9 @@ sane defaults that terminate TLS traffic to a local unix socket:
 $ docker pull mendsley/stud
 $ docker run \
         --name stud \
+        --net host
         -d \
-        -p 443:443 \
-        -v $PWD/certs:/cert \
-        -v $PWD/sock:/sock \
+        -v ${PATH_TO_KEY_AND_CERTIFICATE_PEM}:/etc/keycert.pem" \
         mendsley/stud
 ```
 
