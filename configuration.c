@@ -137,7 +137,7 @@ stud_config * config_new (void) {
   r->NCORES             = 1;
   r->CERT_DEFAULT       = NULL;
   r->CERT_FILES         = NULL;
-  r->CIPHER_SUITE       = NULL;
+  r->CIPHER_SUITE       = strdup("ECDH-AESGCM:DH+AWSGCM:ECDH+AES256:DH+AES256:ECDH+AES128:DH+AES:ECDG+3DES:DH+3DES:RSA+AESGCM:RSA+AES:RSA+3DES:!aNULL:!MD5:!DSS:TLS_FALLBACK_SCSV");
   r->ENGINE             = NULL;
   r->BACKLOG            = 100;
 
