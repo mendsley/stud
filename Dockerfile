@@ -27,4 +27,4 @@ COPY --from=builder /usr/src/stud/stud /usr/bin/stud
 EXPOSE 443
 
 ENTRYPOINT ["/usr/bin/stud"]
-CMD ["-q", "--write-proxy-v2", "/cert/stud.pem"]
+CMD ["/cert/stud.pem"]
