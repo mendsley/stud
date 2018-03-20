@@ -1527,11 +1527,18 @@ int config_parse_cli(int argc, char **argv, stud_config *cfg, int *retval) {
   // Any arguments left are presumed to be PEM files
   argc -= optind;
   argv += optind;
-  for (i = 0; i < argc; i++) {
-    if (0 != config_param_validate(CFG_PEM_FILE, argv[i], cfg, NULL, 0)) {
-        *retval = 1;
-        return 1;
-    }
+  if (argc == 0) {
+      if (0 != config_param_validate(CFG_PEM_FILE, "/etc/keycert.pem", cfg, NULL, 0)) {
+          *retval = 1;
+          return 1;
+      }
+  } else {
+      for (i = 0; i < argc; i++) {
+        if (0 != config_param_validate(CFG_PEM_FILE, argv[i], cfg, NULL, 0)) {
+            *retval = 1;
+            return 1;
+        }
+      }
   }
   if (cfg->PMODE == SSL_SERVER && cfg->CERT_DEFAULT == NULL) {
     config_error_set("No x509 certificate PEM file specified!");

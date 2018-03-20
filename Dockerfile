@@ -28,4 +28,3 @@ COPY --from=builder /usr/src/stud/example.com.pem /etc/keycert.pem
 EXPOSE 443
 
 ENTRYPOINT ["/usr/bin/stud"]
-CMD ["/etc/keycert.pem"]
