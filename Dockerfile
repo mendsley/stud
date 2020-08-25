@@ -7,6 +7,7 @@ RUN apk add --update \
 		make \
 		musl-dev \
 		openssl-dev \
+		zlib-dev \
 		;
 
 ADD . /usr/src/stud/
@@ -18,6 +19,7 @@ LABEL maintainer="Matthew Endsley <mendsley@gmail.com>"
 RUN apk add --update \
 		openssl=1.1.1g-r0 \
 		libev=4.33-r0 \
+		zlib=1.2.11-r3 \
 	&& rm -rf /var/cache/apk/* \
 	&& mkdir -p /cert /sock \
 	;
