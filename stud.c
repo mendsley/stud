@@ -1365,9 +1365,10 @@ static void end_handshake(int index, proxystate *ps) {
     ev_io_stop(loop, &ps->ev_w_handshake);
 
     /* Disable renegotiation (CVE-2009-3555) */
-    if (ps->ssl->s3) {
+    /* NOTE(mendsley): This has been fixed in upstream openssl */
+    /*if (ps->ssl->s3) {
         ps->ssl->s3->flags |= SSL3_FLAGS_NO_RENEGOTIATE_CIPHERS;
-    }
+    }*/
     ps->handshaked = 1;
 
     /* Check if clear side is connected */
