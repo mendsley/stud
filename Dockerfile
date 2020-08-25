@@ -1,4 +1,4 @@
-FROM alpine:3.7 AS builder
+FROM alpine:3.12.0 AS builder
 
 RUN apk add --update \
 		bsd-compat-headers \
@@ -12,12 +12,12 @@ RUN apk add --update \
 ADD . /usr/src/stud/
 RUN make -C /usr/src/stud/
 
-FROM alpine:3.7
+FROM alpine:3.12.0
 LABEL maintainer="Matthew Endsley <mendsley@gmail.com>"
 
 RUN apk add --update \
-		openssl=1.0.2n-r0 \
-		libev=4.24-r0 \
+		openssl=1.1.1g-r0 \
+		libev=4.33-r0 \
 	&& rm -rf /var/cache/apk/* \
 	&& mkdir -p /cert /sock \
 	;
