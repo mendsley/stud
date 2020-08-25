@@ -668,7 +668,7 @@ EVP_PKEY *load_privatekey(SSL_CTX *ctx, const char *file) {
     }
 
     pkey = PEM_read_bio_PrivateKey(bio, NULL,
-          ctx->default_passwd_callback, ctx->default_passwd_callback_userdata);
+          SSL_CTX_get_default_passwd_cb(ctx), SSL_CTX_get_default_passwd_cb_userdata(ctx));
     BIO_free(bio);
 
     return pkey;
